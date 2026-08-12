@@ -1,301 +1,161 @@
 # Go Authorization Platform
 
-[![CI](https://github.com/mmmihaeel/go-authorization-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/mmmihaeel/go-authorization-platform/actions/workflows/ci.yml)
-[![Security](https://github.com/mmmihaeel/go-authorization-platform/actions/workflows/security.yml/badge.svg)](https://github.com/mmmihaeel/go-authorization-platform/actions/workflows/security.yml)
-[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go)](https://go.dev/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+A compact reference implementation of a multi-tenant authorization boundary in Go. It combines relationship data from OpenFGA with contextual rules from OPA, persists every evaluated decision and an outbox event in one PostgreSQL transaction, and delivers audit events through RabbitMQ to an idempotent consumer.
 
-A production-style **authorization control plane in Go** that composes:
+The repository is intentionally a single demonstrable system, not a reusable IAM product. The domain is limited to organizations, teams, folders, and documents so that the security properties remain inspectable.
 
-- **OpenFGA** for durable RBAC/ReBAC relationships and Zanzibar-style permission inheritance;
-- **OPA/Rego** for contextual ABAC constraints and the final allow/deny decision;
-- **Keycloak/OIDC** boundaries for identity, workload principals, token exchange, and delegation;
-- **Envoy `ext_authz`** for fail-closed sidecar/gateway enforcement;
-- **PostgreSQL transactional outbox + RabbitMQ** contracts for auditable, idempotent decision events;
-- **Kubernetes, Helm, Argo CD, Terraform/Terragrunt, OpenTelemetry, Prometheus, and Grafana** deployment evidence.
-
-The domain is intentionally neutral: a multi-tenant document collaboration platform with organizations, teams, folders, documents, users, and service principals. This keeps the repository focused on authorization engineering rather than pretending to reproduce a bank's proprietary domain.
-
-> **Portfolio integrity:** this repository is a public engineering project, not a claim that the author operated this exact platform in production. Implemented code, integration-ready adapters, and roadmap items are explicitly separated below.
-
-## Why this repository exists
-
-Most authorization demos stop at a role table or a handful of endpoints. This project is designed to show the engineering work around the decision itself:
-
-- model ownership and versioning;
-- tenant isolation and confused-deputy prevention;
-- relationship and contextual policy composition;
-- sidecar enforcement and failure-mode behavior;
-- immutable decision evidence and event delivery;
-- concurrency, race safety, policy tests, benchmarks, deployment controls, and incident response.
-
-## Architecture
+## Request path
 
 ```mermaid
 flowchart LR
-    Client[Client or service] -->|OIDC access token| KC[Keycloak / IdP]
-    Client -->|request| Envoy[Envoy ext_authz enforcement]
-    Envoy -->|trusted identity + resource context| API[Go authorization API]
-    API -->|relationship check| FGA[OpenFGA]
-    API -->|contextual decision| OPA[OPA / Rego]
-    API -->|decision + outbox in one transaction| PG[(PostgreSQL)]
-    PG --> Worker[Audit outbox worker]
-    Worker --> MQ[RabbitMQ audit exchange]
-    MQ --> Consumer[Idempotent consumers]
-    API --> OTel[OpenTelemetry Collector]
-    OTel --> Obs[Prometheus / Grafana / trace backend]
-    Envoy -->|allow + decision ID| Resource[Protected demo API]
-    Admission[Kubernetes admission webhook] -->|requires policy ref + sidecar| Workload[Protected workload]
+    C[Client] -->|Keycloak JWT| E[Envoy]
+    E -->|HTTP ext_authz| A[Go authorization API]
+    A -->|relationship check| F[OpenFGA]
+    A -->|context input| O[OPA]
+    A -->|decision + outbox / one transaction| P[(PostgreSQL)]
+    A -->|allow| R[Protected document API]
+    A -->|deny or error| D[403 / 503]
+    W[Outbox worker] --> P
+    W -->|persistent publish + confirm| Q[RabbitMQ]
+    Q --> I[Idempotent audit consumer]
+    I --> P
 ```
 
-The API uses **deny by default**. OpenFGA answers *whether a relationship path permits the operation*; OPA then evaluates tenant equality, account state, risk, MFA, trusted-device, classification, and purpose constraints. Neither engine silently overrides the other.
+Envoy sends the original bearer token to the authorization API. The API validates issuer, signature, lifetime, and audience against Keycloak. Subject, tenant, roles, principal type, and MFA state are derived from validated claims; caller-supplied identity headers are not trusted. The demo's device, risk, and purpose headers simulate trusted edge context and are called out as a deployment boundary below.
 
-See [Architecture](docs/architecture.md), [Authorization model](docs/authorization-model.md), and [ADR 0001](docs/adr/0001-openfga-plus-opa.md).
+OpenFGA answers *whether the principal has the requested relationship*. Its model demonstrates organization roles, team membership, usersets, folder inheritance, direct grants, and service principals. OPA answers *whether the current context permits use of that relationship*. Its policy enforces tenant equality, suspension, risk, MFA for destructive actions, and device/purpose requirements for restricted documents.
 
-## Current implementation status
+The final rule is explicit and fail-closed:
 
-### Implemented in the starter
+```text
+allow = openfga_allowed AND opa_allowed AND audit_transaction_committed
+```
 
-- Go decision service with validation, normalization, reason codes, correlation IDs, and fail-closed dependency errors;
-- self-contained demo checker/policy plus HTTP clients for real OpenFGA and OPA services;
-- `POST /v1/decisions/check` and an Envoy-compatible `/v1/ext-authz/*` endpoint;
-- multi-tenant OpenFGA model, tuples, and model-test scenarios;
-- Rego v1 policy and positive/negative policy tests;
-- in-memory audit recorder and a PostgreSQL transaction that stores a decision and its outbox event atomically;
-- bounded-concurrency outbox worker, stale publishing-lease recovery, and an idempotent consumer contract;
-- optional build-tag adapters for Keycloak OIDC, pgx, RabbitMQ, and OpenTelemetry;
-- Prometheus-format decision metrics;
-- Kubernetes `AuthorizationPolicyBinding` CRD and a tested validating admission webhook;
-- Docker Compose profiles, Helm chart, Argo CD application, Terraform/Terragrunt module, dashboards, alerts, and runbooks;
-- unit, integration, HTTP contract, race, and benchmark tests.
+An OpenFGA or OPA error returns `503` and never reaches the protected API. With `AUTHZ_AUDIT_REQUIRED=true`—the Compose default—a database failure also converts a prospective allow into a denial.
 
-### Executable verification completed for this starter
+## Run the complete demo
 
-- strict formatting and `go vet`;
-- all default-path unit and integration tests;
-- `go test -race ./...`;
-- builds for all four commands;
-- allow/deny HTTP smoke flow, metrics output, and malformed/trailing JSON cases;
-- an in-process benchmark for regression comparison only.
-
-The checked-in module and container target Go 1.26. External policy engines and deployment tools were not available in the assembly environment, so the first repository run must execute the version-pinned OPA/OpenFGA, Compose, Helm, Terraform, and optional-adapter checks described in [Starter validation](docs/starter-validation.md). This boundary is recorded explicitly rather than presenting unexecuted configuration as verified evidence.
-
-### Integration-ready, but not wired into the default demo binary
-
-- PostgreSQL audit repository (`-tags postgres`);
-- RabbitMQ publisher (`-tags rabbitmq`);
-- OIDC verifier (`-tags oidc`);
-- OTLP tracing middleware (`-tags otel`);
-- Keycloak token-exchange configuration beyond the local realm baseline;
-- remote OpenFGA store IDs, which are generated during bootstrap.
-
-This separation keeps `make run` fast and deterministic while preserving production-oriented adapters for the next implementation phase.
-
-### Deliberately left for the roadmap
-
-- a controller that reconciles `AuthorizationPolicyBinding` resources;
-- managed-cloud modules and real secret-manager integration;
-- a persistent trace backend;
-- signed policy bundles and promotion attestations;
-- published load-test numbers from repeatable hardware;
-- multi-region consistency and disaster-recovery drills.
-
-See [Roadmap](docs/roadmap.md) for acceptance criteria rather than vague feature names.
-
-## Quick start
-
-### 1. Run the executable vertical slice
-
-Requires Go 1.26+.
+Requirements: Docker with Compose, `make`, `curl`, and `jq`. The checked-in local passwords and client secret are deliberately scoped to loopback-only development services; do not reuse them.
 
 ```bash
-go mod tidy
-make check
-make run
+make up
+make demo
 ```
 
-In another terminal:
+`make up` builds the Go binaries and starts PostgreSQL, OpenFGA, OPA, Keycloak, Envoy, RabbitMQ, the authorization API, the protected API, the outbox worker, the audit consumer, and OpenTelemetry Collector. OpenFGA's model and tuples and Keycloak's realm are bootstrapped automatically. `make observability-up` adds Prometheus and Grafana.
+
+`make demo` obtains real Keycloak access tokens and sends real requests through Envoy. It verifies:
+
+- an organization administrator can read the Acme roadmap;
+- a same-tenant user without a relationship is denied;
+- an inherited relationship is constrained by restricted-document context;
+- trusted device plus purpose permits the contextual case;
+- an Acme principal cannot read a Globex document;
+- a destructive action without token-derived MFA is denied;
+- a client-credentials service principal can use its narrow OpenFGA grant;
+- every decision reaches PostgreSQL, the outbox is publisher-confirmed, and the SQL-idempotent consumer records it.
+
+Useful local endpoints:
+
+| Endpoint | Purpose |
+|---|---|
+| `http://localhost:10000` | Envoy-protected document API |
+| `http://localhost:8085` | authorization API; bearer token required for decisions |
+| `http://localhost:8081` | OpenFGA API |
+| `http://localhost:8181` | OPA API |
+| `http://localhost:8082` | Keycloak |
+| `http://localhost:15672` | RabbitMQ management |
+| `http://localhost:9090` | Prometheus |
+| `http://localhost:3001` | Grafana |
+
+All published ports bind to `127.0.0.1`. Stop containers with `make down`; use `make reset` to also remove this project's development volumes.
+
+## Authorization model
+
+Representative paths in [model.fga](policies/openfga/model.fga):
+
+```text
+organization admin -> document can_view/can_edit/can_delete
+team#member -> folder viewer -> document parent -> document can_view
+folder editor -> document parent -> document can_edit
+service viewer -> document can_view
+```
+
+Objects include the tenant in their identifier (`document:acme/roadmap`) and also link to their organization. This prevents ambiguous IDs and makes tenant-crossing relationships visible in the graph. OPA independently compares subject and canonical resource tenants. Resource tenant and classification come from the demo resource catalog in the authorization service, not request headers.
+
+The direct decision endpoint exists for integration with a trusted policy-enforcement point. It authenticates the caller and replaces supplied resource metadata with canonical demo metadata. The Envoy path is the primary demonstration because a denied request is rejected before the protected handler runs.
+
+See [Authorization model](docs/authorization-model.md) and [ADR 0001](docs/adr/0001-openfga-plus-opa.md).
+
+## Audit delivery
+
+`SQLRepository.RecordDecision` inserts `authorization_decisions` and `outbox_events` under one transaction. Workers claim rows with `FOR UPDATE SKIP LOCKED`, use bounded concurrency, retry with capped exponential backoff, and reclaim stale publishing leases. RabbitMQ publishes are persistent, mandatory, and awaited with publisher confirms before an outbox row becomes `published`.
+
+The consumer uses manual acknowledgements and a durable queue. A SQL inbox provides event leases and completed-event deduplication. Its demonstration handler performs an idempotent insert keyed by event ID. This gives at-least-once delivery without presenting it as exactly-once messaging.
+
+See [ADR 0004](docs/adr/0004-transactional-outbox.md) and [Failure modes](docs/failure-modes.md).
+
+## Development and validation
 
 ```bash
-make smoke
+make check              # format check, vet, tests, race tests, builds
+make policy-test        # OPA tests in the pinned container
+make model-test         # OpenFGA model assertions in the pinned CLI
+make compose-validate
+make fail-closed-smoke  # live 401 and OPA-outage 503 checks; restores OPA
+make helm-lint          # requires Helm
+make bench              # in-process decision orchestration benchmark only
+make load               # small k6 profile; obtains a local demo token when TOKEN is unset
 ```
 
-Example allow request:
+CI runs module verification, formatting, vet, unit/integration and race tests, command builds, policy/model tests, Compose validation, container builds, Helm rendering, Terraform formatting/validation, CodeQL, dependency review, and `govulncheck`.
 
-```bash
-curl --fail-with-body http://localhost:8080/v1/decisions/check \
-  -H 'Content-Type: application/json' \
-  -H 'X-Request-ID: readme-example' \
-  --data '{
-    "subject": {
-      "id": "alice",
-      "tenant_id": "acme",
-      "roles": ["tenant_admin"]
-    },
-    "resource": {
-      "type": "document",
-      "id": "roadmap",
-      "tenant_id": "acme",
-      "attributes": {"classification": "internal"}
-    },
-    "action": "view",
-    "context": {
-      "device_trusted": true,
-      "mfa": true,
-      "risk_score": 10,
-      "purpose": "project_delivery"
-    }
-  }'
-```
+The in-process benchmark excludes network, database, policy-engine, and broker latency. It is useful for allocation/regression checks only. The k6 scenario exercises HTTP but is not a production capacity claim.
 
-Response shape:
+## Observability
 
-```json
-{
-  "decision_id": "c7746e8f-...",
-  "correlation_id": "readme-example",
-  "allowed": true,
-  "reason_codes": ["allowed"],
-  "evaluated_at": "2026-08-12T12:00:00Z",
-  "latency_ms": {"openfga": 0.01, "opa": 0.01, "total": 0.04},
-  "audit_recorded": true
-}
-```
+The API exports low-cardinality counters for allow, deny, evaluation errors, and audit outcomes plus histograms for total, OpenFGA, and OPA latency. HTTP instrumentation emits W3C trace context through OpenTelemetry. Prometheus rules cover service availability, decision errors, audit persistence failures, and denial changes. Grafana provisions a small overview dashboard.
 
-### 2. Demonstrate Envoy fail-closed enforcement
+Decision and request IDs are returned as headers and fields. Tokens and full credential-bearing configuration are never logged.
 
-```bash
-make sidecar-up
-make sidecar-smoke
-```
+## Deployment examples
 
-Envoy listens on `localhost:10000`, calls the Go `/v1/ext-authz/*` contract, and only forwards an allowed request to the demo resource API. The authorization decision ID is propagated upstream.
+The Helm chart demonstrates probes, resources, non-root/read-only containers, OPA as a sidecar, secret references, a PodDisruptionBudget, an HPA, NetworkPolicy, and an optional ServiceMonitor. These are examples: PostgreSQL, OpenFGA, Keycloak, RabbitMQ, and secret delivery remain platform dependencies.
 
-The demo accepts identity headers so the flow is easy to inspect. In a real edge path those headers must be stripped from external traffic and re-created only by a trusted JWT-validation layer; see the [threat model](docs/threat-model.md).
+- Helm: [`deploy/helm/go-authorization-platform`](deploy/helm/go-authorization-platform)
+- Argo CD: [`deploy/argocd/application.yaml`](deploy/argocd/application.yaml)
+- Terraform/Terragrunt: [`infrastructure`](infrastructure)
+- CRD and webhook: [`deploy/kubernetes`](deploy/kubernetes)
 
-### 3. Start policy infrastructure
+`AuthorizationPolicyBinding` describes the intended policy and enforcement mode. The validating webhook rejects workloads marked `authz.platform.io/protected=true` unless they also reference a policy and include the `authorization-sidecar` container. It deliberately does not include a controller or sidecar injector.
 
-```bash
-make infra-up
-make policy-test
-make model-test
-./scripts/bootstrap-openfga.sh
-```
+`./scripts/generate-webhook-certs.sh` creates a 30-day local certificate, TLS Secret manifest, and webhook configuration with the CA bundle rendered under ignored `.local/` storage. Certificate rotation and trust delivery are platform responsibilities.
 
-`bootstrap-openfga.sh` writes generated IDs to `.env.runtime`. Then run the API against real engines:
+## Security boundaries and limitations
 
-```bash
-set -a
-. ./.env.runtime
-set +a
-go run ./cmd/authz-api
-```
+- TLS/mTLS, external secret management, Keycloak hardening, and network identity are deployment responsibilities. Compose is loopback-only development configuration.
+- Device trust, risk, and purpose are simulated request context in the local demo. A real edge must derive or attest them and strip incoming copies before forwarding.
+- The resource catalog is static and deliberately tiny. A real application would resolve immutable tenant/classification metadata from its resource service or database.
+- Keycloak client credentials demonstrate service identity. Automated RFC 8693 token exchange is documented but left out because current Keycloak exchange permissions and deployment policy are environment-specific.
+- The outbox provides at-least-once delivery. Consumers must remain idempotent; a broker acknowledgement can still be lost after successful handling.
+- Readiness checks PostgreSQL. Startup verifies OpenFGA store/model discovery; authorization requests fail closed if OpenFGA, OPA, or JWKS access later fails.
+- The Kubernetes, Argo CD, Terraform, and Terragrunt material is not a complete cluster or cloud platform and does not provision remote resources by itself.
 
-### 4. Start identity and observability profiles
-
-```bash
-make identity-up
-make observability-up
-```
-
-- Keycloak: `http://localhost:8082`
-- Prometheus: `http://localhost:9090`
-- Grafana: `http://localhost:3001`
-- OpenFGA playground: `http://localhost:3000`
-- RabbitMQ management: `http://localhost:15672`
-
-All bundled credentials are local-only examples and must never be reused.
-
-## Decision contract
-
-| Layer | Question | Source of truth | Example |
-|---|---|---|---|
-| Authentication | Who/what is calling? | Keycloak/OIDC claims | `sub=alice`, `tenant_id=acme`, `act.sub=reporting-service` |
-| RBAC | What tenant-level role exists? | OpenFGA relationship | `user:alice admin organization:acme` |
-| ReBAC | Is there a relationship path? | OpenFGA graph | team member → folder viewer → document viewer |
-| ABAC | Is the request safe *now*? | OPA/Rego | MFA, risk, device trust, purpose, classification |
-| Enforcement | Is the application reached? | Envoy/sidecar | fail closed on deny or dependency error |
-| Evidence | Can the decision be reconstructed? | PostgreSQL + audit event | decision ID, model/policy context, reason codes |
+See [Threat model](docs/threat-model.md), [Token delegation](docs/token-delegation.md), and the [degradation runbook](docs/runbooks/authorization-degradation.md).
 
 ## Repository layout
 
 ```text
-cmd/                         runnable services and webhook
-internal/authorization/      decision domain, OpenFGA/OPA adapters, benchmark
-internal/audit/              decision persistence and transactional outbox worker
-internal/events/             idempotent consumer primitive
-internal/authn/              bearer boundary and optional Keycloak OIDC verifier
-internal/admission/          Kubernetes validating admission webhook
-policies/openfga/            model, tuples, and executable model tests
-policies/opa/                contextual policy and Rego tests
-migrations/                  decision, outbox, and inbox schema
-demo/                        Envoy and Keycloak local scenarios
-deploy/                      Compose support, Helm, Argo CD, CRD, webhook manifests
-infrastructure/              Terraform module and Terragrunt example
-observability/               OTel Collector, Prometheus alerts, Grafana dashboard
-tests/                       integration and k6 scenarios
-docs/                        ADRs, threat model, failure modes, runbooks, roadmap
+cmd/                 API, outbox worker, audit consumer, demo API, webhook
+internal/            authorization, authentication, audit, broker, HTTP, telemetry
+policies/            OpenFGA model/tuples/tests and OPA policy/tests
+migrations/          decision, outbox, inbox, and consumed-event schema
+demo/                Keycloak realm and Envoy configuration
+observability/       collector, Prometheus, alerts, and Grafana dashboard
+deploy/              Helm, Kubernetes/CRD/webhook, and Argo CD examples
+infrastructure/      Terraform module/environment and Terragrunt example
+tests/               integration and k6 scenarios
+docs/                ADRs, threat/failure analysis, testing notes, and runbooks
 ```
 
-## Validation commands
-
-```bash
-go mod tidy         # resolve optional adapters and create go.sum on the first machine
-make check          # gofmt, vet, tests, race tests, builds
-make bench          # local microbenchmark; not a production latency claim
-make policy-test    # Rego tests in pinned OPA image
-make model-test     # OpenFGA model tests in pinned CLI image
-make helm-lint      # chart lint + render
-make validate       # all of the above plus Compose validation
-```
-
-Optional adapters are intentionally isolated behind build tags. After resolving modules and generating `go.sum`, compile them with:
-
-```bash
-go test -tags 'oidc postgres rabbitmq otel' ./...
-```
-
-## Security and operational decisions
-
-- Authorization dependencies fail closed; the API returns a denied decision and a dependency error.
-- The policy result cannot grant access when OpenFGA denied the relationship.
-- Tenant IDs are checked again in OPA even though resource identifiers are tenant-scoped in OpenFGA.
-- The Envoy demo uses `failure_mode_allow: false`.
-- Decision persistence and event creation share a PostgreSQL transaction.
-- Consumers claim event IDs before executing business effects.
-- Protected Kubernetes workloads require both `authz.platform.io/policy-ref` and an `authorization-sidecar` container.
-- No service token, model ID, or local credential is committed as a production secret.
-
-Read [Threat model](docs/threat-model.md), [Failure modes](docs/failure-modes.md), and [Authorization degradation runbook](docs/runbooks/authorization-degradation.md).
-
-## Measurable completion criteria
-
-A portfolio release is complete only after the evidence exists:
-
-1. CI, race tests, OPA tests, OpenFGA model tests, Helm render, and image builds pass.
-2. Remote-engine integration tests cover allow, deny, cross-tenant, stale-model, and dependency-failure paths.
-3. A tagged k6 run publishes the environment, commit SHA, scenario, thresholds, and raw summary—never a context-free latency number.
-4. Grafana screenshots show decision throughput, deny/error behavior, and a correlated trace.
-5. A failure drill demonstrates OpenFGA/OPA outage behavior, outbox recovery, and policy rollback.
-6. The README records trade-offs and non-goals as clearly as features.
-
-## Documentation map
-
-- [Architecture](docs/architecture.md)
-- [Authorization model](docs/authorization-model.md)
-- [Token delegation](docs/token-delegation.md)
-- [Threat model](docs/threat-model.md)
-- [Failure modes](docs/failure-modes.md)
-- [Testing strategy](docs/testing-strategy.md)
-- [Starter validation boundary](docs/starter-validation.md)
-- [Load testing](docs/load-testing.md)
-- [Portfolio evidence](docs/portfolio-evidence.md)
-- [GitHub repository setup](docs/github-repository-setup.md)
-- [Demo script](docs/demo-script.md)
-- [Roadmap](docs/roadmap.md)
-- [ADRs](docs/adr/)
-- [Runbooks](docs/runbooks/)
-
-## License
-
-Apache License 2.0. See [LICENSE](LICENSE).
+Apache-2.0 licensed. See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).

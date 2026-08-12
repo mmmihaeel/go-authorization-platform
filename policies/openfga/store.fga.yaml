@@ -32,8 +32,17 @@ tests:
   - name: "service-principal-access"
     description: "A delegated workload identity can receive a narrowly scoped relationship."
     check:
-      - user: service:reporting-bot
+      - user: service:service-account-reporting-service
         object: document:acme/roadmap
+        assertions:
+          can_view: true
+          can_edit: false
+
+  - name: "restricted-document-inherits-folder-access"
+    description: "Context policy can further restrict a relationship grant inherited from the folder."
+    check:
+      - user: user:bob
+        object: document:acme/security-plan
         assertions:
           can_view: true
           can_edit: false

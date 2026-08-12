@@ -31,7 +31,13 @@
 - user: folder:acme/engineering
   relation: parent
   object: document:acme/roadmap
-- user: service:reporting-bot
+- user: organization:acme
+  relation: organization
+  object: document:acme/security-plan
+- user: folder:acme/engineering
+  relation: parent
+  object: document:acme/security-plan
+- user: service:service-account-reporting-service
   relation: viewer
   object: document:acme/roadmap
 - user: organization:globex

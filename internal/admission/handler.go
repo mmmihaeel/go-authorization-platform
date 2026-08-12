@@ -2,7 +2,6 @@ package admission
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 )
 
@@ -13,9 +12,9 @@ func (Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	limited := io.LimitReader(r.Body, 2<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	var review Review
-	if err := json.NewDecoder(limited).Decode(&review); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&review); err != nil {
 		http.Error(w, "invalid AdmissionReview", http.StatusBadRequest)
 		return
 	}

@@ -65,7 +65,7 @@ The OIDC adapter in `internal/authn` validates issuer and audience and extracts 
 - `reporting-service`, a workload client;
 - users and tenant claims for the local demo.
 
-It does not claim that production-grade token exchange permissions are complete. The completion task is to configure explicit source/target exchange permissions, request an exchanged token, verify actor/audience claims, and add integration tests for valid and invalid delegation.
+It does not configure RFC 8693 exchange permissions. Those permissions are deployment-specific; an implementation must configure an explicit source/target pair, verify actor and audience claims, and test both valid and invalid delegation. The local demo instead proves a narrow client-credentials service identity.
 
 ## Delegation test cases
 

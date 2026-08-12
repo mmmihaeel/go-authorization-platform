@@ -167,3 +167,8 @@ func (e *DependencyError) Error() string {
 }
 
 func (e *DependencyError) Unwrap() error { return e.Err }
+
+type AuditError struct{ Err error }
+
+func (e *AuditError) Error() string { return fmt.Sprintf("audit persistence failed: %v", e.Err) }
+func (e *AuditError) Unwrap() error { return e.Err }

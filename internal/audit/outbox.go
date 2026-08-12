@@ -32,6 +32,7 @@ type WorkerConfig struct {
 	Concurrency  int
 	PollInterval time.Duration
 	RetryBase    time.Duration
+	OnError      func(error)
 }
 
 type Worker struct {
@@ -66,8 +67,8 @@ func (w *Worker) Run(ctx context.Context) error {
 	ticker := time.NewTicker(w.config.PollInterval)
 	defer ticker.Stop()
 	for {
-		if _, err := w.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			// The outer process logger owns reporting; polling continues after transient failures.
+		if _, err := w.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) && w.config.OnError != nil {
+			w.config.OnError(err)
 		}
 		select {
 		case <-ctx.Done():

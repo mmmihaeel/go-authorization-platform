@@ -4,7 +4,7 @@
 
 Provide one understandable authorization platform that demonstrates security, platform, and operations engineering without creating an artificial fleet of microservices.
 
-The starter therefore uses a **modular Go service**, one audit worker, one protected demo workload, and optional platform components. Each boundary can be separated later only when scaling, ownership, or isolation evidence justifies it.
+The project therefore uses a **modular Go service**, one audit worker, one audit consumer, and one protected demo workload. Each boundary should be separated later only when scaling, ownership, or isolation evidence justifies it.
 
 ## System context
 
@@ -22,6 +22,7 @@ flowchart TB
       AuditDB[(PostgreSQL decision + outbox)]
       Worker[Audit worker]
       Broker[RabbitMQ]
+      Consumer[Idempotent audit consumer]
     end
     subgraph IdentityZone[Identity platform]
       IdP[Keycloak / OIDC provider]
@@ -40,7 +41,7 @@ flowchart TB
     AuthAPI --> OpenFGA
     AuthAPI --> OPA
     AuthAPI --> AuditDB
-    AuditDB --> Worker --> Broker
+    AuditDB --> Worker --> Broker --> Consumer --> AuditDB
     Gateway --> Resource
     AuthAPI --> OTel --> Prom --> Grafana
     Admission --> Gateway
@@ -64,8 +65,9 @@ sequenceDiagram
     C->>K: Authenticate / exchange token
     K-->>C: audience-scoped access token
     C->>E: Resource request + token
-    E->>E: Validate token and normalize trusted identity context
-    E->>A: ext_authz check
+    E->>A: ext_authz check + bearer token
+    A->>K: Resolve/cache signing keys
+    A->>A: Validate issuer, signature, lifetime, audience, claims
     A->>F: Check(subject, relation, tenant-scoped object)
     F-->>A: relationship_allowed
     A->>O: Evaluate relationship + request context
@@ -120,15 +122,15 @@ Owns request-time constraints:
 
 The policy remains small enough to audit. Complex organization structure stays in OpenFGA rather than being reproduced as Rego data.
 
-### PostgreSQL and audit worker
+### PostgreSQL, outbox worker, and audit consumer
 
-The SQL repository writes the decision and outbox event in one transaction. The worker claims records using `FOR UPDATE SKIP LOCKED`, publishes with bounded concurrency, and records retry state. This avoids a distributed transaction between PostgreSQL and RabbitMQ.
+The SQL repository writes the decision and outbox event in one transaction. The worker claims records using `FOR UPDATE SKIP LOCKED`, publishes with bounded concurrency and publisher confirms, and records retry state. The consumer uses manual acknowledgements plus a SQL inbox and idempotent event insert. This avoids a distributed transaction between PostgreSQL and RabbitMQ while making at-least-once delivery explicit.
 
 ### Envoy enforcement
 
 The HTTP `ext_authz` filter blocks the application request until the decision service returns. `failure_mode_allow` is false. The decision ID is added to the upstream request for correlation.
 
-Identity headers in the demo are a teaching boundary, not a production trust model. A production listener must remove externally supplied identity headers before JWT validation and only then populate the trusted equivalents.
+The authorization API validates the bearer token itself and derives identity context from claims. The demo never accepts subject, role, tenant, or MFA headers from the client. Device, risk, and purpose headers simulate values that a production enforcement point must derive or attest after stripping incoming copies.
 
 ### Kubernetes admission webhook
 
@@ -138,7 +140,7 @@ A protected Pod, Deployment, StatefulSet, or DaemonSet is rejected unless its po
 - a non-empty `authz.platform.io/policy-ref` annotation;
 - an `authorization-sidecar` container.
 
-The `AuthorizationPolicyBinding` CRD defines the intended policy binding. A reconciliation controller is roadmap work; the webhook itself is implemented and tested.
+The `AuthorizationPolicyBinding` CRD defines the intended policy binding. A reconciliation controller and sidecar injection are intentionally outside scope; the webhook itself is implemented and tested.
 
 ## Availability and scaling model
 
@@ -151,12 +153,12 @@ The API is stateless except for external dependencies and can scale horizontally
 - outbox workers scaled independently with row locking;
 - pod disruption budget, readiness probes, HPA, and topology spread constraints.
 
-These are design targets, not claims that the starter has been load-certified for a particular throughput.
+These are design targets, not claims that the project has been load-certified for a particular throughput.
 
 ## Security boundaries
 
 1. **External → edge:** tokens are untrusted input until validated.
-2. **Edge → authorization API:** identity headers are trusted only on a private authenticated hop.
+2. **Edge → authorization API:** the bearer token is revalidated; contextual headers require a private authenticated hop and edge sanitization.
 3. **Authorization API → policy engines:** model/store IDs and policy paths are controlled configuration.
 4. **Authorization API → audit database:** write path contains sensitive decision context and needs least privilege.
 5. **GitOps → cluster:** policy/config promotion requires review and immutable revisions.
@@ -167,6 +169,6 @@ These are design targets, not claims that the starter has been load-certified fo
 - building a general-purpose identity provider;
 - replacing OpenFGA or OPA with a custom policy language;
 - reproducing a full service mesh;
-- creating a cloud account, cluster, or managed database from this starter;
+- creating a cloud account, cluster, or managed database from this repository;
 - claiming multi-region consistency without measured evidence;
 - turning every package into a separately deployed service.

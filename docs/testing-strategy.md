@@ -55,17 +55,17 @@ Record:
 - `ns/op`, `B/op`, allocations;
 - before/after comparison when changing the hot path.
 
-### Remote integration tests — completion task
+### Live integration path
 
-Run disposable PostgreSQL, OpenFGA, OPA, and RabbitMQ containers and verify:
+`make up && make demo` runs PostgreSQL, OpenFGA, OPA, Keycloak, Envoy, and RabbitMQ containers and verifies:
 
 1. store/model import;
 2. actual OpenFGA checks;
 3. actual Rego decisions;
 4. decision + outbox transaction;
 5. event publication and idempotent consumption;
-6. dependency timeout and recovery;
-7. model/policy revision pinning.
+6. protected-handler enforcement with real JWTs;
+7. service-principal access and tenant isolation.
 
 ### Deployment tests
 
@@ -101,7 +101,7 @@ CodeQL → govulncheck → dependency review
 
 ## Evidence naming
 
-Store sanitized evidence under a release or pull request, not as ambiguous screenshots:
+If a release stores validation evidence, keep it sanitized and tied to a commit:
 
 ```text
 evidence/<version>/

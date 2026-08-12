@@ -66,4 +66,11 @@ CREATE TABLE inbox_events (
     PRIMARY KEY (consumer_name, event_id)
 );
 
+CREATE TABLE consumed_audit_events (
+    event_id        uuid PRIMARY KEY,
+    event_type      text NOT NULL,
+    payload         jsonb NOT NULL,
+    consumed_at     timestamptz NOT NULL DEFAULT now()
+);
+
 COMMIT;

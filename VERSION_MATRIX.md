@@ -13,6 +13,7 @@ Pinned baseline selected on **2026-08-12** from current stable releases. Dependa
 | Envoy | 1.39.0 |
 | RabbitMQ | 4.3.4 |
 | Kubernetes | 1.36.3 target |
+| Helm | 3.18.6 |
 | Argo CD | 3.5.0 target |
 | OpenTelemetry Collector | 0.158.0 |
 | Prometheus | 3.13.2 |

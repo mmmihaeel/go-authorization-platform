@@ -1,5 +1,3 @@
-//go:build postgres
-
 package platform
 
 import (
@@ -12,6 +10,9 @@ import (
 )
 
 func OpenPostgres(dsn string) (*sql.DB, error) {
+	if dsn == "" {
+		return nil, fmt.Errorf("PostgreSQL DSN is required")
+	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open PostgreSQL: %w", err)

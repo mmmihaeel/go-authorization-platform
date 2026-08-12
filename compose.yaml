@@ -1,49 +1,54 @@
 name: go-authorization-platform
 
-x-service-defaults: &service-defaults
+x-go-service: &go-service
   restart: unless-stopped
   networks: [authz]
+  security_opt: [no-new-privileges:true]
+
+x-runtime-environment: &runtime-environment
+  DATABASE_URL: postgres://authz:authz-local-only@postgres:5432/authz?sslmode=disable
+  RABBITMQ_URL: amqp://authz:authz-local-only@rabbitmq:5672/
+  RABBITMQ_EXCHANGE: authorization.audit
+  RABBITMQ_QUEUE: authorization.audit.log
+  OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+  KEYCLOAK_ISSUER: http://localhost:8082/realms/authz-demo
+  OIDC_JWKS_URL: http://keycloak:8080/realms/authz-demo/protocol/openid-connect/certs
+  OIDC_AUDIENCE: authz-api
 
 services:
   postgres:
-    <<: *service-defaults
     image: postgres:18.4-alpine
-    profiles: [infra]
+    restart: unless-stopped
+    networks: [authz]
     environment:
       POSTGRES_USER: authz
       POSTGRES_PASSWORD: authz-local-only
       POSTGRES_DB: authz
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:5432:5432"]
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql
       - ./deploy/compose/postgres/00-create-openfga.sh:/docker-entrypoint-initdb.d/00-create-openfga.sh:ro
       - ./migrations/000001_authorization_audit.up.sql:/docker-entrypoint-initdb.d/10-authorization-audit.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U authz -d authz"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U authz -d authz && psql -U authz -d authz -tAc 'SELECT 1 FROM authorization_decisions LIMIT 0' >/dev/null"]
+      interval: 3s
       timeout: 3s
-      retries: 20
+      retries: 30
 
   openfga-migrate:
     image: openfga/openfga:v1.18.3
-    profiles: [infra]
     restart: "no"
     networks: [authz]
     depends_on:
-      postgres:
-        condition: service_healthy
-    command:
-      - migrate
-      - --datastore-engine=postgres
-      - --datastore-uri=postgres://authz:authz-local-only@postgres:5432/openfga?sslmode=disable
+      postgres: {condition: service_healthy}
+    command: ["migrate", "--datastore-engine=postgres", "--datastore-uri=postgres://authz:authz-local-only@postgres:5432/openfga?sslmode=disable"]
 
   openfga:
-    <<: *service-defaults
     image: openfga/openfga:v1.18.3
-    profiles: [infra]
+    restart: unless-stopped
+    networks: [authz]
     depends_on:
-      openfga-migrate:
-        condition: service_completed_successfully
+      openfga-migrate: {condition: service_completed_successfully}
     command:
       - run
       - --datastore-engine=postgres
@@ -52,114 +57,159 @@ services:
       - --http-addr=0.0.0.0:8080
       - --metrics-addr=0.0.0.0:2112
     ports:
-      - "8081:8080"
-      - "3000:3000"
-      - "2112:2112"
+      - "127.0.0.1:8081:8080"
+      - "127.0.0.1:2112:2112"
+
+  openfga-bootstrap:
+    build:
+      context: ./demo/openfga
+    restart: on-failure
+    networks: [authz]
+    depends_on:
+      openfga: {condition: service_started}
+    environment:
+      OPENFGA_URL: http://openfga:8080
+      OPENFGA_STORE_FILE: /workspace/policies/openfga/store.fga.yaml
+    volumes:
+      - ./:/workspace:ro
+      - openfga-bootstrap-state:/state
 
   opa:
-    <<: *service-defaults
     image: openpolicyagent/opa:1.19.0-static
-    profiles: [infra]
-    command:
-      - run
-      - --server
-      - --addr=0.0.0.0:8181
-      - --set=decision_logs.console=true
-      - /policies
-    ports: ["8181:8181"]
-    volumes:
-      - ./policies/opa:/policies:ro
+    restart: unless-stopped
+    networks: [authz]
+    command: ["run", "--server", "--addr=0.0.0.0:8181", "--set=decision_logs.console=true", "/policies"]
+    ports: ["127.0.0.1:8181:8181"]
+    volumes: ["./policies/opa:/policies:ro"]
     healthcheck:
       test: ["CMD", "/opa", "eval", "1"]
-      interval: 5s
+      interval: 3s
       timeout: 3s
-      retries: 20
+      retries: 30
 
   rabbitmq:
-    <<: *service-defaults
     image: rabbitmq:4.3.4-management-alpine
-    profiles: [infra]
+    restart: unless-stopped
+    networks: [authz]
     environment:
       RABBITMQ_DEFAULT_USER: authz
       RABBITMQ_DEFAULT_PASS: authz-local-only
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
       timeout: 5s
-      retries: 20
+      retries: 30
 
   keycloak:
-    <<: *service-defaults
     image: quay.io/keycloak/keycloak:26.7.1
-    profiles: [identity]
-    command: ["start-dev", "--import-realm", "--health-enabled=true"]
+    restart: unless-stopped
+    networks: [authz]
+    command: ["start-dev", "--import-realm", "--health-enabled=true", "--hostname=http://localhost:8082", "--hostname-backchannel-dynamic=true"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin-local-only
-    ports: ["8082:8080"]
-    volumes:
-      - ./demo/keycloak/realm-export.json:/opt/keycloak/data/import/authz-demo.json:ro
+      KC_FEATURES_DISABLED: identity-brokering-api,twitter-broker
+    ports: ["127.0.0.1:8082:8080"]
+    volumes: ["./demo/keycloak/realm-export.json:/opt/keycloak/data/import/authz-demo.json:ro"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/9000'"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
 
   authz-api:
-    <<: *service-defaults
-    profiles: [app, sidecar]
-    build:
-      context: .
-      args:
-        TARGET: authz-api
+    <<: *go-service
+    build: {context: ., args: {TARGET: authz-api}}
     environment:
+      <<: *runtime-environment
+      SERVICE_NAME: authz-api
       HTTP_ADDRESS: :8080
-      AUTHZ_MODE: demo
-      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
-    ports: ["8080:8080"]
+      AUTHZ_AUDIT_REQUIRED: "true"
+      AUTHZ_DEPENDENCY_TIMEOUT: 1s
+      OPENFGA_URL: http://openfga:8080
+      OPENFGA_STORE_NAME: Go Authorization Platform
+      OPA_URL: http://opa:8181
+      OPA_DECISION_PATH: authz/decision
+    depends_on:
+      postgres: {condition: service_healthy}
+      openfga-bootstrap: {condition: service_completed_successfully}
+      opa: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+      keycloak: {condition: service_healthy}
+    ports: ["127.0.0.1:8085:8080"]
+    healthcheck:
+      test: ["CMD", "/app/app", "healthcheck", "http://127.0.0.1:8080/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  audit-worker:
+    <<: *go-service
+    build: {context: ., args: {TARGET: audit-worker}}
+    environment: {<<: *runtime-environment, SERVICE_NAME: audit-worker}
+    depends_on:
+      postgres: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+
+  audit-consumer:
+    <<: *go-service
+    build: {context: ., args: {TARGET: audit-consumer}}
+    environment: {<<: *runtime-environment, SERVICE_NAME: audit-consumer}
+    depends_on:
+      postgres: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
 
   demo-resource-api:
-    <<: *service-defaults
-    profiles: [app, sidecar]
-    build:
-      context: .
-      args:
-        TARGET: demo-resource-api
+    <<: *go-service
+    build: {context: ., args: {TARGET: demo-resource-api}}
     expose: ["8090"]
 
   envoy:
-    <<: *service-defaults
     image: envoyproxy/envoy:v1.39.0
-    profiles: [sidecar]
-    depends_on: [authz-api, demo-resource-api]
+    restart: unless-stopped
+    networks: [authz]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      authz-api: {condition: service_healthy}
+      demo-resource-api: {condition: service_started}
     command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
-    ports: ["10000:10000", "9901:9901"]
-    volumes:
-      - ./demo/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+    ports: ["127.0.0.1:10000:10000"]
+    volumes: ["./demo/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro"]
 
   otel-collector:
-    <<: *service-defaults
     image: otel/opentelemetry-collector-contrib:0.158.0
-    profiles: [observability]
+    restart: unless-stopped
+    networks: [authz]
     command: ["--config=/etc/otelcol/config.yaml"]
-    volumes:
-      - ./observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro
-    ports:
-      - "4317:4317"
-      - "4318:4318"
-      - "8889:8889"
+    volumes: ["./observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro"]
+    ports: ["127.0.0.1:4317:4317", "127.0.0.1:4318:4318", "127.0.0.1:8889:8889"]
 
   prometheus:
-    <<: *service-defaults
     image: prom/prometheus:v3.13.2
+    restart: unless-stopped
+    networks: [authz]
     profiles: [observability]
     command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d"]
     volumes:
       - ./observability/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
       - ./observability/alerts:/etc/prometheus/alerts:ro
-    ports: ["9090:9090"]
+      - prometheus-data:/prometheus
+    ports: ["127.0.0.1:9090:9090"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
 
   grafana:
-    <<: *service-defaults
     image: grafana/grafana:13.1.3
+    restart: unless-stopped
+    networks: [authz]
     profiles: [observability]
     environment:
       GF_SECURITY_ADMIN_USER: admin
@@ -169,10 +219,20 @@ services:
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
-    ports: ["3001:3000"]
+      - grafana-data:/var/lib/grafana
+    ports: ["127.0.0.1:3001:3000"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
 
 networks:
   authz: {}
 
 volumes:
   postgres-data: {}
+  openfga-bootstrap-state: {}
+  prometheus-data: {}
+  grafana-data: {}
+  rabbitmq-data: {}

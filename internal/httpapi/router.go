@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,24 @@ type RouterConfig struct {
 	ServiceName         string
 	TrustRequestSubject bool
 	MaxRequestBodyBytes int64
+	Verifier            authn.Verifier
+	Resources           ResourceResolver
+	Readiness           func(context.Context) error
+}
+
+type ResourceResolver interface {
+	Resolve(context.Context, string, string) (authorization.Resource, error)
+}
+
+type StaticResourceResolver map[string]authorization.Resource
+
+func (s StaticResourceResolver) Resolve(_ context.Context, resourceType, resourceID string) (authorization.Resource, error) {
+	resource, ok := s[resourceType+":"+resourceID]
+	if !ok {
+		return authorization.Resource{}, fmt.Errorf("resource %s:%s was not found", resourceType, resourceID)
+	}
+	resource.Attributes = cloneMap(resource.Attributes)
+	return resource, nil
 }
 
 type Router struct {
@@ -54,9 +73,15 @@ func (r *Router) Handler() http.Handler {
 	mux.HandleFunc("GET /health/live", r.live)
 	mux.HandleFunc("GET /health/ready", r.ready)
 	mux.HandleFunc("GET /metrics", r.prometheus)
-	mux.HandleFunc("POST /v1/decisions/check", r.check)
-	mux.HandleFunc("/v1/ext-authz", r.extAuthz)
-	mux.HandleFunc("/v1/ext-authz/", r.extAuthz)
+	check := http.Handler(http.HandlerFunc(r.check))
+	extAuthz := http.Handler(http.HandlerFunc(r.extAuthz))
+	if !r.config.TrustRequestSubject {
+		check = authn.RequireBearer(r.config.Verifier, check)
+		extAuthz = authn.RequireBearer(r.config.Verifier, extAuthz)
+	}
+	mux.Handle("POST /v1/decisions/check", check)
+	mux.Handle("/v1/ext-authz", extAuthz)
+	mux.Handle("/v1/ext-authz/", extAuthz)
 	return r.requestLog(r.requestID(mux))
 }
 
@@ -71,7 +96,16 @@ func (r *Router) index(w http.ResponseWriter, _ *http.Request) {
 func (r *Router) live(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "live"})
 }
-func (r *Router) ready(w http.ResponseWriter, _ *http.Request) {
+
+func (r *Router) ready(w http.ResponseWriter, request *http.Request) {
+	if r.config.Readiness != nil {
+		ctx, cancel := context.WithTimeout(request.Context(), time.Second)
+		defer cancel()
+		if err := r.config.Readiness(ctx); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "not_ready", "required persistence dependency is unavailable")
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
@@ -110,12 +144,23 @@ func (r *Router) check(w http.ResponseWriter, request *http.Request) {
 			return
 		}
 		input.Subject.ID = claims.Subject
+		input.Subject.Type = claims.SubjectType
 		input.Subject.TenantID = claims.TenantID
 		input.Subject.Roles = append([]string(nil), claims.Roles...)
+		input.Subject.Claims = map[string]any{"authorized_party": claims.AuthorizedBy, "actor": claims.Actor}
 	} else if !r.config.TrustRequestSubject {
 		r.metrics.RecordDecision(false, true)
 		writeError(w, http.StatusUnauthorized, "authentication_required", "no authenticated subject is present")
 		return
+	}
+	if r.config.Resources != nil {
+		resource, err := r.config.Resources.Resolve(request.Context(), input.Resource.Type, input.Resource.ID)
+		if err != nil {
+			r.metrics.RecordDecision(false, true)
+			writeError(w, http.StatusNotFound, "resource_not_found", err.Error())
+			return
+		}
+		input.Resource = resource
 	}
 
 	if input.CorrelationID == "" {
@@ -123,26 +168,38 @@ func (r *Router) check(w http.ResponseWriter, request *http.Request) {
 	}
 	decision, err := r.service.Check(request.Context(), input)
 	r.metrics.RecordDecision(decision.Allowed, err != nil)
+	r.metrics.RecordLatency(decision.LatencyMS)
+	r.metrics.RecordAudit(decision.AuditRecorded)
 	if err != nil {
 		status := http.StatusInternalServerError
 		code := "authorization_failed"
+		message := "authorization request failed"
 		if errors.Is(err, authorization.ErrInvalidRequest) {
-			status, code = http.StatusBadRequest, "invalid_request"
+			status, code, message = http.StatusBadRequest, "invalid_request", err.Error()
 		}
 		var dependencyErr *authorization.DependencyError
 		if errors.As(err, &dependencyErr) {
-			status, code = http.StatusServiceUnavailable, "dependency_unavailable"
+			status, code, message = http.StatusServiceUnavailable, "dependency_unavailable", "an authorization dependency is unavailable"
 		}
-		writeJSON(w, status, map[string]any{"error": map[string]any{"code": code, "message": err.Error()}, "decision": decision})
+		var auditErr *authorization.AuditError
+		if errors.As(err, &auditErr) {
+			status, code, message = http.StatusServiceUnavailable, "audit_unavailable", "authorization audit persistence is unavailable"
+		}
+		writeJSON(w, status, map[string]any{"error": map[string]any{"code": code, "message": message}, "decision": decision})
 		return
 	}
 	writeJSON(w, http.StatusOK, decision)
 }
 
 // extAuthz exposes the HTTP contract expected by Envoy's ext_authz filter.
-// Identity headers must be injected by a trusted JWT validation layer; they
-// must never be accepted directly from untrusted internet clients.
+// Identity and MFA are derived from the verified bearer token. Device, risk,
+// and purpose headers are edge-provided context and require a trusted hop.
 func (r *Router) extAuthz(w http.ResponseWriter, request *http.Request) {
+	claims, ok := authn.FromContext(request.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication_required", "no authenticated subject is present")
+		return
+	}
 	action := strings.ToLower(strings.TrimSpace(request.Header.Get("X-Action")))
 	if action == "" {
 		switch request.Method {
@@ -172,39 +229,45 @@ func (r *Router) extAuthz(w http.ResponseWriter, request *http.Request) {
 	if resourceType == "" {
 		resourceType = "document"
 	}
-
-	riskScore, _ := strconv.Atoi(request.Header.Get("X-Risk-Score"))
-	mfa, _ := strconv.ParseBool(request.Header.Get("X-MFA"))
-	deviceTrusted, _ := strconv.ParseBool(request.Header.Get("X-Device-Trusted"))
-	roles := splitCSV(request.Header.Get("X-Subject-Roles"))
-	attributes := map[string]any{}
-	if ownerID := strings.TrimSpace(request.Header.Get("X-Resource-Owner-ID")); ownerID != "" {
-		attributes["owner_id"] = ownerID
+	if resourceID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_resource", "resource ID is required")
+		return
 	}
-	if classification := strings.TrimSpace(request.Header.Get("X-Resource-Classification")); classification != "" {
-		attributes["classification"] = classification
+
+	riskScore, err := parseIntHeader(request, "X-Risk-Score", 0, 100)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_context", err.Error())
+		return
+	}
+	deviceTrusted, err := parseBoolHeader(request, "X-Device-Trusted")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_context", err.Error())
+		return
+	}
+	if r.config.Resources == nil {
+		writeError(w, http.StatusServiceUnavailable, "resource_resolver_unavailable", "resource resolver is not configured")
+		return
+	}
+	resource, err := r.config.Resources.Resolve(request.Context(), resourceType, resourceID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "resource_not_found", err.Error())
+		return
 	}
 
 	input := authorization.CheckRequest{
 		Subject: authorization.Subject{
-			Type:     "user",
-			ID:       strings.TrimSpace(request.Header.Get("X-Subject-ID")),
-			TenantID: strings.TrimSpace(request.Header.Get("X-Tenant-ID")),
-			Roles:    roles,
+			Type: claims.SubjectType, ID: claims.Subject, TenantID: claims.TenantID,
+			Roles:  append([]string(nil), claims.Roles...),
+			Claims: map[string]any{"authorized_party": claims.AuthorizedBy, "actor": claims.Actor},
 		},
-		Resource: authorization.Resource{
-			Type:       resourceType,
-			ID:         resourceID,
-			TenantID:   strings.TrimSpace(request.Header.Get("X-Tenant-ID")),
-			Attributes: attributes,
-		},
+		Resource:      resource,
 		Action:        action,
 		Relation:      strings.TrimSpace(request.Header.Get("X-Relation")),
 		CorrelationID: request.Header.Get("X-Request-ID"),
 		Context: authorization.RequestContext{
-			IPAddress:     request.Header.Get("X-Forwarded-For"),
+			IPAddress:     request.RemoteAddr,
 			DeviceTrusted: deviceTrusted,
-			MFA:           mfa,
+			MFA:           claims.MFA,
 			RiskScore:     riskScore,
 			Purpose:       request.Header.Get("X-Access-Purpose"),
 		},
@@ -212,10 +275,17 @@ func (r *Router) extAuthz(w http.ResponseWriter, request *http.Request) {
 
 	decision, err := r.service.Check(request.Context(), input)
 	r.metrics.RecordDecision(decision.Allowed, err != nil)
+	r.metrics.RecordLatency(decision.LatencyMS)
+	r.metrics.RecordAudit(decision.AuditRecorded)
 	w.Header().Set("X-Authorization-Decision-ID", decision.ID)
 	if err != nil {
 		var dependencyErr *authorization.DependencyError
 		if errors.As(err, &dependencyErr) {
+			writeJSON(w, http.StatusServiceUnavailable, decision)
+			return
+		}
+		var auditErr *authorization.AuditError
+		if errors.As(err, &auditErr) {
 			writeJSON(w, http.StatusServiceUnavailable, decision)
 			return
 		}
@@ -229,16 +299,37 @@ func (r *Router) extAuthz(w http.ResponseWriter, request *http.Request) {
 	writeJSON(w, http.StatusOK, decision)
 }
 
-func splitCSV(value string) []string {
-	if strings.TrimSpace(value) == "" {
+func parseIntHeader(request *http.Request, name string, minimum, maximum int) (int, error) {
+	value := strings.TrimSpace(request.Header.Get(name))
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return 0, fmt.Errorf("%s must be an integer between %d and %d", name, minimum, maximum)
+	}
+	return parsed, nil
+}
+
+func parseBoolHeader(request *http.Request, name string) (bool, error) {
+	value := strings.TrimSpace(request.Header.Get(name))
+	if value == "" {
+		return false, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("%s must be true or false", name)
+	}
+	return parsed, nil
+}
+
+func cloneMap(source map[string]any) map[string]any {
+	if source == nil {
 		return nil
 	}
-	parts := strings.Split(value, ",")
-	result := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if trimmed := strings.TrimSpace(part); trimmed != "" {
-			result = append(result, trimmed)
-		}
+	result := make(map[string]any, len(source))
+	for key, value := range source {
+		result[key] = value
 	}
 	return result
 }
@@ -282,6 +373,7 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }

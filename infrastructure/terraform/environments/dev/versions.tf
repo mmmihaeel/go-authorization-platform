@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.15.0, < 1.16.0"
+  required_version = ">= 1.14.0, < 1.16.0"
   backend "local" { path = ".terraform/state/dev.tfstate" }
   required_providers {
     kubernetes = { source = "hashicorp/kubernetes", version = "~> 3.2" }

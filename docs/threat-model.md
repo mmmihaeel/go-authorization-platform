@@ -27,15 +27,15 @@ Authorization decisions for multi-tenant HTTP services, policy/model delivery, a
 
 | Threat | Impact | Primary mitigations | Remaining work |
 |---|---|---|---|
-| Spoofed `X-Subject-ID` or tenant headers | privilege escalation | strip external headers; derive identity from validated token; private/mTLS authz hop | wire OIDC middleware into Envoy demo |
-| Cross-tenant object/subject mix | data exposure | tenant-scoped object IDs; OPA equality check; negative model tests; tenant indexes | derive resource tenant from trusted lookup |
+| Spoofed identity or tenant headers | privilege escalation | API validates JWT and derives subject/tenant/roles/MFA from claims; Envoy forwards no identity headers | require mTLS or workload identity on the edge-to-PDP hop |
+| Cross-tenant object/subject mix | data exposure | canonical resource metadata; tenant-scoped object IDs; OPA equality check; negative model tests | replace the static demo catalog with an authoritative resource lookup |
 | Malicious or accidental broad OpenFGA tuple | privilege escalation | reviewed model/tuple changes; immutable revisions; replay tests; audit changes | signed promotion artifact |
 | OPA policy grants despite graph denial | privilege escalation | policy explicitly requires `relationship_allowed`; service also combines with logical AND | mutation tests for policy invariants |
 | Stale model/policy during rollout | inconsistent decisions | pin model ID/package revision; staged rollout; decision metadata; rollback runbook | add revision fields to persisted record |
 | Token accepted by wrong service | confused deputy | audience and issuer validation; explicit exchange permissions; `azp`/`act` checks | full exchange integration test |
-| Replayed event creates duplicate side effect | duplicate audit/action | event ID; inbox claim-before-handle; idempotent consumer | PostgreSQL inbox implementation |
+| Replayed event creates duplicate side effect | duplicate audit/action | event ID; PostgreSQL inbox lease; idempotent insert; manual acknowledgement | require the same invariant for every added handler |
 | Decision stored but event not published | missing downstream audit | transactional outbox; retry/backoff; backlog alert | dead-letter and replay tooling |
-| Broker published but acknowledgement lost | duplicate delivery | at-least-once contract; idempotent consumer | publisher confirms and delivery tests |
+| Broker published but acknowledgement lost | duplicate delivery | publisher confirms; at-least-once contract; idempotent consumer | failure-injection drills |
 | OpenFGA/OPA unavailable | unauthorized bypass or outage | fail closed, short timeout, 503, alerting, no `failure_mode_allow` | controlled read-only fallback evaluation |
 | Sidecar omitted from protected workload | bypass | admission webhook requires policy ref and sidecar | controller reconciliation and image verification |
 | Admission webhook unavailable | unprotected deployment | `failurePolicy: Fail`, multiple replicas, PDB | certificate rotation automation |

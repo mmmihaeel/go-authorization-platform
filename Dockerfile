@@ -1,19 +1,22 @@
 # syntax=docker/dockerfile:1.9
 FROM golang:1.26.5-alpine AS build
-ARG TARGET=authz-api
 ARG VERSION=dev
 ARG COMMIT=unknown
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build \
-    -trimpath \
-    -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
-    -o /out/app ./cmd/${TARGET}
+RUN for target in authz-api audit-worker audit-consumer demo-resource-api admission-webhook; do \
+      CGO_ENABLED=0 GOOS=linux go build \
+        -trimpath \
+        -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
+        -o "/out/${target}" "./cmd/${target}"; \
+    done
 
 FROM gcr.io/distroless/static-debian12:nonroot
+ARG TARGET=authz-api
 WORKDIR /app
-COPY --from=build /out/app /app/app
+COPY --from=build "/out/${TARGET}" /app/app
 USER nonroot:nonroot
 EXPOSE 8080
 ENTRYPOINT ["/app/app"]

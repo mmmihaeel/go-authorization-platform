@@ -34,7 +34,6 @@ spec:
             - { name: http, containerPort: 8080, protocol: TCP }
           env:
             - { name: HTTP_ADDRESS, value: ":8080" }
-            - { name: AUTHZ_MODE, value: {{ .Values.config.authorizationMode | quote }} }
             - { name: OPENFGA_URL, value: {{ .Values.config.openfgaURL | quote }} }
             - { name: OPENFGA_STORE_ID, value: {{ .Values.config.openfgaStoreID | quote }} }
             - { name: OPENFGA_MODEL_ID, value: {{ .Values.config.openfgaModelID | quote }} }
@@ -43,7 +42,14 @@ spec:
             - { name: AUTHZ_DEPENDENCY_TIMEOUT, value: {{ .Values.config.dependencyTimeout | quote }} }
             - { name: AUTHZ_AUDIT_REQUIRED, value: {{ .Values.config.auditRequired | quote }} }
             - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ .Values.config.otlpEndpoint | quote }} }
-            {{- with .Values.secretEnv }}{{ toYaml . | nindent 12 }}{{- end }}
+            - { name: KEYCLOAK_ISSUER, value: {{ .Values.config.keycloakIssuer | quote }} }
+            - { name: OIDC_JWKS_URL, value: {{ .Values.config.oidcJWKSURL | quote }} }
+            - { name: OIDC_AUDIENCE, value: {{ .Values.config.oidcAudience | quote }} }
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.runtimeSecret.name | quote }}
+                  key: {{ .Values.runtimeSecret.databaseURLKey | quote }}
           livenessProbe:
             httpGet: { path: {{ .Values.probes.liveness.path }}, port: http }
             initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}

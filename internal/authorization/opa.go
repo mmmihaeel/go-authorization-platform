@@ -31,10 +31,11 @@ func NewOPAClient(config OPAConfig) (*OPAClient, error) {
 	if decisionPath == "" {
 		decisionPath = "authz/decision"
 	}
-	parsed, err := url.Parse(strings.TrimRight(config.BaseURL, "/"))
+	baseURL, err := parseHTTPBaseURL(config.BaseURL, "OPA")
 	if err != nil {
-		return nil, fmt.Errorf("parse OPA base URL: %w", err)
+		return nil, err
 	}
+	parsed, _ := url.Parse(baseURL)
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/v1/data/" + decisionPath
 	if config.Timeout <= 0 {
 		config.Timeout = 500 * time.Millisecond
@@ -73,7 +74,7 @@ func (c *OPAClient) Evaluate(ctx context.Context, input PolicyInput) (PolicyResu
 	}
 
 	var result opaResponse
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
 		return PolicyResult{}, fmt.Errorf("decode OPA response: %w", err)
 	}
 	if result.Result == nil {

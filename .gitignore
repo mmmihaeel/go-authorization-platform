@@ -4,6 +4,11 @@
 *.out
 .env
 .env.runtime
+.env.*
+!.env.example
+*.key
+*.pem
+*.crt
 *.tfstate
 *.tfstate.*
 .terraform/

@@ -38,6 +38,18 @@ func validRequest() CheckRequest {
 	}
 }
 
+func TestNewServiceRequiresMandatoryAuditRecorder(t *testing.T) {
+	_, err := NewService(
+		checkerFunc(func(context.Context, RelationshipQuery) (bool, error) { return true, nil }),
+		evaluatorFunc(func(context.Context, PolicyInput) (PolicyResult, error) { return PolicyResult{Allow: true}, nil }),
+		nil,
+		ServiceConfig{AuditRequired: true},
+	)
+	if err == nil {
+		t.Fatal("expected mandatory audit configuration to require a recorder")
+	}
+}
+
 func TestServiceAllowsOnlyWhenRelationshipAndPolicyAllow(t *testing.T) {
 	recorder := &recorderStub{}
 	service, err := NewService(
@@ -55,7 +67,7 @@ func TestServiceAllowsOnlyWhenRelationshipAndPolicyAllow(t *testing.T) {
 		t.Fatal(err)
 	}
 	service.now = func() time.Time { return time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC) }
-	service.newID = func() string { return "decision-1" }
+	service.newID = func() (string, error) { return "decision-1", nil }
 
 	decision, err := service.Check(context.Background(), validRequest())
 	if err != nil {
@@ -147,7 +159,11 @@ func TestServiceCanRequireAuditPersistence(t *testing.T) {
 }
 
 func TestRequestValidation(t *testing.T) {
-	service, _ := NewService(DemoRelationshipChecker{}, DemoPolicyEvaluator{}, nil, ServiceConfig{})
+	service, _ := NewService(
+		checkerFunc(func(context.Context, RelationshipQuery) (bool, error) { return false, nil }),
+		evaluatorFunc(func(context.Context, PolicyInput) (PolicyResult, error) { return PolicyResult{}, nil }),
+		nil, ServiceConfig{},
+	)
 	request := validRequest()
 	request.Subject.ID = ""
 	decision, err := service.Check(context.Background(), request)
@@ -156,30 +172,5 @@ func TestRequestValidation(t *testing.T) {
 	}
 	if decision.ReasonCodes[0] != "invalid_request" {
 		t.Fatalf("unexpected decision: %#v", decision)
-	}
-}
-
-func TestDemoPolicyRequiresPurposeForRestrictedResource(t *testing.T) {
-	result, err := (DemoPolicyEvaluator{}).Evaluate(context.Background(), PolicyInput{
-		Subject:             Subject{ID: "alice", TenantID: "acme"},
-		Resource:            Resource{ID: "roadmap", TenantID: "acme", Attributes: map[string]any{"classification": "restricted"}},
-		Action:              "view",
-		RelationshipAllowed: true,
-		Context:             RequestContext{DeviceTrusted: true},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Allow {
-		t.Fatal("restricted resource without a purpose must be denied")
-	}
-	found := false
-	for _, reason := range result.Reasons {
-		if reason == "access_purpose_required" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected access_purpose_required, got %v", result.Reasons)
 	}
 }

@@ -27,7 +27,34 @@
       "secret": "reporting-local-only",
       "serviceAccountsEnabled": true,
       "standardFlowEnabled": false,
-      "directAccessGrantsEnabled": false
+      "directAccessGrantsEnabled": false,
+      "defaultClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "service-authz-subject",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {"claim.name": "authz_subject", "claim.value": "service-account-reporting-service", "jsonType.label": "String", "access.token.claim": "true"}
+        },
+        {
+          "name": "service-principal-type",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {"claim.name": "principal_type", "claim.value": "service", "jsonType.label": "String", "access.token.claim": "true"}
+        },
+        {
+          "name": "service-tenant",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {"claim.name": "tenant_id", "claim.value": "acme", "jsonType.label": "String", "access.token.claim": "true"}
+        },
+        {
+          "name": "authz-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {"included.client.audience": "authz-api", "access.token.claim": "true"}
+        }
+      ]
     }
   ],
   "roles": {
@@ -42,6 +69,8 @@
       "username": "alice",
       "enabled": true,
       "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Admin",
       "email": "alice@example.test",
       "attributes": {"tenant_id": ["acme"]},
       "credentials": [{"type": "password", "value": "alice-local-only", "temporary": false}],
@@ -51,9 +80,22 @@
       "username": "bob",
       "enabled": true,
       "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Builder",
       "email": "bob@example.test",
       "attributes": {"tenant_id": ["acme"]},
       "credentials": [{"type": "password", "value": "bob-local-only", "temporary": false}],
+      "realmRoles": ["tenant_member"]
+    },
+    {
+      "username": "mallory",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Mallory",
+      "lastName": "Member",
+      "email": "mallory@example.test",
+      "attributes": {"tenant_id": ["acme"]},
+      "credentials": [{"type": "password", "value": "mallory-local-only", "temporary": false}],
       "realmRoles": ["tenant_member"]
     }
   ],
@@ -77,9 +119,58 @@
             "userinfo.token.claim": "true",
             "multivalued": "false"
           }
+        },
+        {
+          "name": "authorization-subject",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "username",
+            "claim.name": "authz_subject",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "principal-type",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "principal_type",
+            "claim.value": "user",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "authz-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "authz-api",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true"
+          }
         }
       ]
     }
   ],
-  "defaultDefaultClientScopes": ["profile", "email", "roles", "tenant-context", "web-origins", "acr", "basic"]
+  "defaultDefaultClientScopes": ["tenant-context"]
 }

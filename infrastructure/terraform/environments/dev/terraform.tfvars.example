@@ -1,3 +1,4 @@
 image_tag        = "0.1.0"
 openfga_store_id = "01EXAMPLESTOREID"
 openfga_model_id = "01EXAMPLEMODELID"
+database_url      = "postgres://authz:replace-me@postgres.authz-system.svc.cluster.local:5432/authz?sslmode=require"

@@ -15,17 +15,21 @@ service:
   targetPort: 8080
 
 config:
-  authorizationMode: remote
   openfgaURL: http://openfga.authz-system.svc.cluster.local:8080
   openfgaStoreID: ""
   openfgaModelID: ""
   opaURL: http://127.0.0.1:8181
   opaDecisionPath: authz/decision
   dependencyTimeout: 750ms
-  auditRequired: false
+  auditRequired: true
   otlpEndpoint: otel-collector.observability.svc.cluster.local:4317
+  keycloakIssuer: https://identity.example.com/realms/authz
+  oidcJWKSURL: https://identity.example.com/realms/authz/protocol/openid-connect/certs
+  oidcAudience: authz-api
 
-secretEnv: []
+runtimeSecret:
+  name: authz-runtime
+  databaseURLKey: database-url
 
 opaSidecar:
   enabled: true

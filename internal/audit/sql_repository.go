@@ -26,6 +26,7 @@ func NewSQLRepository(db *sql.DB) (*SQLRepository, error) {
 }
 
 func (r *SQLRepository) RecordDecision(ctx context.Context, record authorization.AuditRecord) error {
+	record.Decision.AuditRecorded = true
 	requestJSON, err := json.Marshal(record.Request)
 	if err != nil {
 		return fmt.Errorf("marshal authorization request: %w", err)
@@ -39,7 +40,10 @@ func (r *SQLRepository) RecordDecision(ctx context.Context, record authorization
 		return fmt.Errorf("marshal reason codes: %w", err)
 	}
 
-	eventID := newID()
+	eventID, err := newID()
+	if err != nil {
+		return fmt.Errorf("generate outbox event ID: %w", err)
+	}
 	eventPayload, err := json.Marshal(map[string]any{
 		"event_id":    eventID,
 		"event_type":  "authorization.decision.v1",
@@ -185,11 +189,13 @@ func nullable(value string) any {
 	return value
 }
 
-func newID() string {
+func newID() (string, error) {
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
-		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+		return "", err
 	}
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
 	encoded := hex.EncodeToString(raw)
-	return encoded[:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:]
+	return encoded[:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:], nil
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,10 +12,12 @@ import (
 	"time"
 
 	"github.com/mmmihaeel/go-authorization-platform/internal/audit"
+	"github.com/mmmihaeel/go-authorization-platform/internal/authn"
 	"github.com/mmmihaeel/go-authorization-platform/internal/authorization"
 	"github.com/mmmihaeel/go-authorization-platform/internal/config"
 	"github.com/mmmihaeel/go-authorization-platform/internal/httpapi"
 	"github.com/mmmihaeel/go-authorization-platform/internal/observability"
+	"github.com/mmmihaeel/go-authorization-platform/internal/platform"
 )
 
 var version = "dev"
@@ -23,6 +26,12 @@ var commit = "unknown"
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
+	if len(os.Args) == 3 && os.Args[1] == "healthcheck" {
+		if err := healthcheck(os.Args[2]); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -46,20 +55,43 @@ func main() {
 		}
 	}()
 
-	relationships, policies, err := authorizationBackends(cfg)
+	db, err := platform.OpenPostgres(cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("connect audit database", "error", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+	auditRepository, err := audit.NewSQLRepository(db)
+	if err != nil {
+		logger.Error("configure audit repository", "error", err)
+		os.Exit(1)
+	}
+
+	relationships, policies, err := authorizationBackends(rootContext, cfg)
 	if err != nil {
 		logger.Error("configure authorization backends", "error", err)
 		os.Exit(1)
 	}
 
-	service, err := authorization.NewService(relationships, policies, audit.NewMemoryRecorder(), authorization.ServiceConfig{AuditRequired: cfg.AuditRequired})
+	verifier, err := authn.NewOIDCVerifier(rootContext, cfg.OIDCIssuer, cfg.OIDCAudience, cfg.OIDCJWKSURL)
+	if err != nil {
+		logger.Error("configure OIDC verifier", "error", err)
+		os.Exit(1)
+	}
+	service, err := authorization.NewService(relationships, policies, auditRepository, authorization.ServiceConfig{AuditRequired: cfg.AuditRequired})
 	if err != nil {
 		logger.Error("create authorization service", "error", err)
 		os.Exit(1)
 	}
 	router, err := httpapi.NewRouter(service, observability.NewMetrics(), logger, httpapi.RouterConfig{
-		ServiceName:         cfg.ServiceName,
-		TrustRequestSubject: true, // Demo baseline. Use authn.RequireBearer in production wiring.
+		ServiceName: cfg.ServiceName,
+		Verifier:    verifier,
+		Resources: httpapi.StaticResourceResolver{
+			"document:roadmap":       {Type: "document", ID: "roadmap", TenantID: "acme", Attributes: map[string]any{"classification": "internal"}},
+			"document:security-plan": {Type: "document", ID: "security-plan", TenantID: "acme", Attributes: map[string]any{"classification": "restricted"}},
+			"document:globex-plan":   {Type: "document", ID: "globex-plan", TenantID: "globex", Attributes: map[string]any{"classification": "internal"}},
+		},
+		Readiness: db.PingContext,
 	})
 	if err != nil {
 		logger.Error("create HTTP router", "error", err)
@@ -73,10 +105,11 @@ func main() {
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    32 << 10,
 	}
 
 	go func() {
-		logger.Info("authorization API listening", "address", cfg.HTTPAddress, "mode", cfg.AuthorizationMode, "version", version, "commit", commit)
+		logger.Info("authorization API listening", "address", cfg.HTTPAddress, "version", version, "commit", commit)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("serve HTTP", "error", err)
 			stop()
@@ -91,14 +124,32 @@ func main() {
 	}
 }
 
-func authorizationBackends(cfg config.Config) (authorization.RelationshipChecker, authorization.ContextPolicyEvaluator, error) {
-	if cfg.AuthorizationMode == "demo" {
-		return authorization.DemoRelationshipChecker{}, authorization.DemoPolicyEvaluator{}, nil
+func healthcheck(endpoint string) error {
+	client := &http.Client{Timeout: 2 * time.Second}
+	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
 	}
-	openFGA, err := authorization.NewOpenFGAClient(authorization.OpenFGAConfig{
-		BaseURL: cfg.OpenFGAURL, StoreID: cfg.OpenFGAStoreID, AuthorizationModelID: cfg.OpenFGAModelID,
-		APIToken: cfg.OpenFGAAPIToken, Timeout: cfg.DependencyTimeout,
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("health endpoint returned %s", response.Status)
+	}
+	return nil
+}
+
+func authorizationBackends(ctx context.Context, cfg config.Config) (authorization.RelationshipChecker, authorization.ContextPolicyEvaluator, error) {
+	openFGAConfig, err := authorization.DiscoverOpenFGAConfig(ctx, authorization.OpenFGAConfig{
+		BaseURL: cfg.OpenFGAURL, StoreID: cfg.OpenFGAStoreID, StoreName: cfg.OpenFGAStoreName,
+		AuthorizationModelID: cfg.OpenFGAModelID, APIToken: cfg.OpenFGAAPIToken, Timeout: cfg.DependencyTimeout,
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	openFGA, err := authorization.NewOpenFGAClient(openFGAConfig)
 	if err != nil {
 		return nil, nil, err
 	}

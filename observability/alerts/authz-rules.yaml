@@ -22,3 +22,10 @@ groups:
         annotations:
           summary: "Authorization denial rate increased sharply"
           description: "Check recent policy/model changes and tenant-specific traffic before rollback."
+      - alert: AuthorizationAuditPersistenceFailures
+        expr: increase(authz_audit_failures_total[5m]) > 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Authorization audit persistence failed"
+          description: "Required-audit mode blocks allows; investigate PostgreSQL immediately."

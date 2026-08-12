@@ -7,7 +7,7 @@ Authorization failures are security decisions, not ordinary downstream errors. T
 | Failure | API behavior | Envoy behavior | Recovery evidence |
 |---|---|---|---|
 | OpenFGA timeout/error | denied decision, reason `relationship_dependency_unavailable`, HTTP 503 | request blocked | dependency metrics/logs, trace, decision audit when available |
-| OPA timeout/error | denied decision, reason `policy_dependency_unavailable`, HTTP 503 | request blocked | dependency metrics/logs, trace |
+| OPA timeout/error | denied decision, reason `policy_dependency_unavailable`, HTTP 503 | request blocked | dependency metrics/logs, trace, decision audit when available |
 | Invalid request | denied decision, HTTP 400 | request blocked | validation reason code |
 | Audit database failure, audit optional | decision may proceed; `audit_recorded=false` | follows decision | alert and explicit loss window |
 | Audit database failure, audit required | deny, reason `audit_persistence_failed` | request blocked | database incident evidence |
@@ -25,11 +25,11 @@ Authorization failures are security decisions, not ordinary downstream errors. T
 - `false`: prioritize the synchronous authorization decision when the audit store is unavailable, but expose `audit_recorded=false` and alert. Appropriate only when a separately approved loss window exists.
 - `true`: no decision can allow unless its audit evidence is durably stored. Appropriate for operations that require non-repudiation.
 
-A mature system can make this operation-specific rather than global, but that complexity is intentionally outside the starter.
+A larger system may make this operation-specific, but a single explicit switch keeps this reference implementation auditable.
 
 ## Read-only degraded mode
 
-The CRD includes `allow-read-only` as a future policy option, not an implemented default. It would require all of the following:
+The CRD documents `allow-read-only` as a possible deployment policy, but the runtime does not implement it. Such a mode would require all of the following:
 
 - a cryptographically or operationally trusted cache of recent positive entitlements;
 - only explicitly classified read relations;
@@ -42,12 +42,11 @@ Without this evidence, the safe behavior remains deny.
 
 ## Retry behavior
 
-The outbox worker uses bounded concurrency, exponential delay capped by attempt count, and a two-minute recovery lease for stale `publishing` rows. Because at-least-once recovery can republish an event after an ambiguous worker failure, consumers must remain idempotent. Production completion should add:
+The outbox worker uses bounded concurrency, exponential delay capped by attempt count, publisher confirms, lazy RabbitMQ reconnection, and a two-minute recovery lease for stale `publishing` rows. Because at-least-once recovery can republish an event after an ambiguous worker failure, consumers must remain idempotent. Further operational controls may add:
 
 - randomized jitter;
 - configurable lease duration and ownership tokens;
 - maximum attempts and dead-letter state;
-- RabbitMQ publisher confirms;
 - replay tooling with an operator audit trail.
 
 ## Failure-injection matrix

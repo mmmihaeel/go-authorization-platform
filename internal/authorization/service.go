@@ -19,7 +19,7 @@ type Service struct {
 	audit         AuditRecorder
 	config        ServiceConfig
 	now           func() time.Time
-	newID         func() string
+	newID         func() (string, error)
 }
 
 func NewService(
@@ -34,6 +34,9 @@ func NewService(
 	if policies == nil {
 		return nil, errors.New("policy evaluator is required")
 	}
+	if config.AuditRequired && audit == nil {
+		return nil, errors.New("audit recorder is required when audit is mandatory")
+	}
 	return &Service{
 		relationships: relationships,
 		policies:      policies,
@@ -47,8 +50,12 @@ func NewService(
 func (s *Service) Check(ctx context.Context, request CheckRequest) (Decision, error) {
 	startedAt := s.now()
 	request.Normalize(startedAt)
+	decisionID, err := s.newID()
+	if err != nil {
+		return Decision{}, fmt.Errorf("generate decision ID: %w", err)
+	}
 	decision := Decision{
-		ID:            s.newID(),
+		ID:            decisionID,
 		CorrelationID: request.CorrelationID,
 		Allowed:       false,
 		ReasonCodes:   []string{"deny_by_default"},
@@ -113,7 +120,7 @@ func (s *Service) Check(ctx context.Context, request CheckRequest) (Decision, er
 		if s.config.AuditRequired {
 			decision.Allowed = false
 			decision.ReasonCodes = []string{"audit_persistence_failed"}
-			return decision, fmt.Errorf("audit persistence failed: %w", err)
+			return decision, &AuditError{Err: err}
 		}
 	}
 
@@ -139,13 +146,13 @@ func durationMS(duration time.Duration) float64 {
 	return float64(duration.Microseconds()) / 1000
 }
 
-func randomID() string {
+func randomID() (string, error) {
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
-		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+		return "", err
 	}
 	raw[6] = (raw[6] & 0x0f) | 0x40
 	raw[8] = (raw[8] & 0x3f) | 0x80
 	encoded := hex.EncodeToString(raw)
-	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32]
+	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32], nil
 }

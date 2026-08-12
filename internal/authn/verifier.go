@@ -2,17 +2,19 @@ package authn
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strings"
 )
 
 type Claims struct {
-	Subject      string         `json:"sub"`
+	TokenSubject string         `json:"sub"`
+	Subject      string         `json:"authz_subject"`
+	SubjectType  string         `json:"principal_type"`
 	TenantID     string         `json:"tenant_id"`
 	Roles        []string       `json:"roles,omitempty"`
 	AuthorizedBy string         `json:"azp,omitempty"`
 	Actor        map[string]any `json:"act,omitempty"`
+	MFA          bool           `json:"-"`
 }
 
 type Verifier interface {
@@ -33,11 +35,12 @@ func RequireBearer(verifier Verifier, next http.Handler) http.Handler {
 			return
 		}
 		header := r.Header.Get("Authorization")
-		if !strings.HasPrefix(header, "Bearer ") {
+		parts := strings.Fields(header)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 			http.Error(w, "bearer token is required", http.StatusUnauthorized)
 			return
 		}
-		token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+		token := parts[1]
 		if token == "" {
 			http.Error(w, "bearer token is required", http.StatusUnauthorized)
 			return
@@ -54,5 +57,3 @@ func RequireBearer(verifier Verifier, next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), contextKey{}, claims)))
 	})
 }
-
-var ErrOIDCBuildTagRequired = errors.New("build with -tags oidc to enable the Keycloak OIDC verifier")

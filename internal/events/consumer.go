@@ -3,11 +3,20 @@ package events
 import (
 	"context"
 	"errors"
-	"sync"
 )
 
+type InboxClaim uint8
+
+const (
+	ClaimAcquired InboxClaim = iota + 1
+	ClaimCompleted
+	ClaimBusy
+)
+
+var ErrEventInProgress = errors.New("event is already being processed")
+
 type Inbox interface {
-	TryBegin(context.Context, string) (bool, error)
+	TryBegin(context.Context, string) (InboxClaim, error)
 	Complete(context.Context, string) error
 	Release(context.Context, string) error
 }
@@ -32,45 +41,26 @@ func NewConsumer(inbox Inbox, handler Handler) (*Consumer, error) {
 }
 
 func (c *Consumer) Consume(ctx context.Context, eventID string, payload []byte) (processed bool, err error) {
-	acquired, err := c.inbox.TryBegin(ctx, eventID)
-	if err != nil || !acquired {
+	claim, err := c.inbox.TryBegin(ctx, eventID)
+	if err != nil {
 		return false, err
+	}
+	switch claim {
+	case ClaimCompleted:
+		return false, nil
+	case ClaimBusy:
+		return false, ErrEventInProgress
+	case ClaimAcquired:
+	default:
+		return false, errors.New("inbox returned an invalid claim state")
 	}
 	if err := c.handler.Handle(ctx, payload); err != nil {
 		_ = c.inbox.Release(ctx, eventID)
 		return false, err
 	}
 	if err := c.inbox.Complete(ctx, eventID); err != nil {
+		_ = c.inbox.Release(ctx, eventID)
 		return false, err
 	}
 	return true, nil
-}
-
-type MemoryInbox struct {
-	mu    sync.Mutex
-	state map[string]string
-}
-
-func NewMemoryInbox() *MemoryInbox { return &MemoryInbox{state: map[string]string{}} }
-
-func (i *MemoryInbox) TryBegin(_ context.Context, id string) (bool, error) {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	if _, exists := i.state[id]; exists {
-		return false, nil
-	}
-	i.state[id] = "processing"
-	return true, nil
-}
-func (i *MemoryInbox) Complete(_ context.Context, id string) error {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	i.state[id] = "completed"
-	return nil
-}
-func (i *MemoryInbox) Release(_ context.Context, id string) error {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	delete(i.state, id)
-	return nil
 }

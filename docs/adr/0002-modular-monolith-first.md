@@ -5,7 +5,7 @@
 
 ## Context
 
-A portfolio project can appear “senior” by creating many deployables, but service count without independent scaling, ownership, or isolation needs adds operational noise rather than evidence.
+Additional deployables without independent scaling, ownership, or isolation needs add operational cost without improving the authorization boundary.
 
 ## Decision
 

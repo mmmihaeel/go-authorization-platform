@@ -1,5 +1,3 @@
-//go:build otel
-
 package observability
 
 import (

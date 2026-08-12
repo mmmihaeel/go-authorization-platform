@@ -1,52 +1,49 @@
 import http from 'k6/http';
-import { check } from 'k6';
+import { check, fail } from 'k6';
 import { Rate, Trend } from 'k6/metrics';
+import exec from 'k6/execution';
 
-const decisionErrors = new Rate('decision_errors');
-const decisionLatency = new Trend('decision_latency', true);
+const scenarioErrors = new Rate('scenario_errors');
+const enforcementLatency = new Trend('enforcement_latency', true);
 
 export const options = {
   scenarios: {
-    steady_decisions: {
+    steady_enforcement: {
       executor: 'constant-arrival-rate',
-      rate: Number(__ENV.RATE || 100),
+      rate: Number(__ENV.RATE || 25),
       timeUnit: '1s',
-      duration: __ENV.DURATION || '60s',
-      preAllocatedVUs: 20,
-      maxVUs: 100,
+      duration: __ENV.DURATION || '30s',
+      preAllocatedVUs: 10,
+      maxVUs: 50,
     },
   },
   thresholds: {
-    http_req_failed: ['rate<0.01'],
-    decision_errors: ['rate<0.01'],
-    decision_latency: ['p(95)<100', 'p(99)<250'],
+    scenario_errors: ['rate<0.01'],
+    enforcement_latency: ['p(95)<250', 'p(99)<500'],
   },
 };
 
-const baseURL = __ENV.BASE_URL || 'http://localhost:8080';
+const baseURL = __ENV.BASE_URL || 'http://localhost:10000';
+const token = __ENV.TOKEN;
+
+export function setup() {
+  if (!token) fail('TOKEN must contain an authz-api audience-scoped Keycloak access token');
+}
 
 export default function () {
-  const allowCase = __ITER % 5 !== 0;
-  const tenant = allowCase ? 'acme' : 'globex';
-  const payload = JSON.stringify({
-    subject: { id: 'alice', tenant_id: 'acme', roles: ['tenant_admin'] },
-    resource: {
-      type: 'document', id: 'roadmap', tenant_id: tenant,
-      attributes: { classification: 'internal' },
+  const shouldAllow = exec.scenario.iterationInTest % 5 !== 0;
+  const response = http.get(`${baseURL}/documents/roadmap`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'X-Risk-Score': shouldAllow ? '10' : '95',
+      'X-Request-ID': `k6-${__VU}-${__ITER}`,
     },
-    action: 'view',
-    context: { device_trusted: true, mfa: true, risk_score: 10 },
+    responseCallback: http.expectedStatuses(200, 403),
   });
-  const response = http.post(`${baseURL}/v1/decisions/check`, payload, {
-    headers: { 'Content-Type': 'application/json', 'X-Request-ID': `k6-${__VU}-${__ITER}` },
-  });
-  const parsed = response.json();
-  const expected = allowCase;
   const valid = check(response, {
-    'status is 200': (r) => r.status === 200,
-    'decision matches scenario': () => parsed.allowed === expected,
-    'decision ID is present': () => Boolean(parsed.decision_id),
+    'enforcement status matches': (r) => r.status === (shouldAllow ? 200 : 403),
+    'decision ID is present': (r) => Boolean(r.headers['X-Authorization-Decision-Id']),
   });
-  decisionErrors.add(!valid);
-  decisionLatency.add(response.timings.duration);
+  scenarioErrors.add(!valid);
+  enforcementLatency.add(response.timings.duration);
 }

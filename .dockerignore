@@ -5,6 +5,17 @@ dist
 .local
 .terraform
 .terragrunt-cache
+**/.terraform
+**/.terragrunt-cache
+**/bin
 *.tfstate*
+**/*.tfstate*
+*.out
+.coverage
+.env
+.env.*
+*.key
+*.pem
+*.crt
 README.md
 docs

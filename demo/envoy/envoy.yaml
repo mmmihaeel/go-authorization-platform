@@ -24,31 +24,27 @@ static_resources:
                       transport_api_version: V3
                       failure_mode_allow: false
                       status_on_error: { code: ServiceUnavailable }
+                      allowed_headers:
+                        patterns:
+                          - { exact: authorization }
+                          - { exact: x-device-trusted }
+                          - { exact: x-risk-score }
+                          - { exact: x-access-purpose }
+                          - { exact: x-request-id }
                       http_service:
                         server_uri:
                           uri: http://authz-api:8080
                           cluster: authz_api
-                          timeout: 0.75s
+                          timeout: 1.5s
                         path_prefix: /v1/ext-authz
-                        authorization_request:
-                          allowed_headers:
-                            patterns:
-                              - { exact: x-subject-id }
-                              - { exact: x-subject-roles }
-                              - { exact: x-tenant-id }
-                              - { exact: x-resource-type }
-                              - { exact: x-resource-id }
-                              - { exact: x-resource-owner-id }
-                              - { exact: x-resource-classification }
-                              - { exact: x-action }
-                              - { exact: x-relation }
-                              - { exact: x-mfa }
-                              - { exact: x-device-trusted }
-                              - { exact: x-risk-score }
-                              - { exact: x-access-purpose }
-                              - { exact: x-request-id }
                         authorization_response:
                           allowed_upstream_headers:
+                            patterns:
+                              - { exact: x-authorization-decision-id }
+                          allowed_client_headers:
+                            patterns:
+                              - { exact: x-authorization-decision-id }
+                          allowed_client_headers_on_success:
                             patterns:
                               - { exact: x-authorization-decision-id }
                   - name: envoy.filters.http.router
@@ -75,7 +71,9 @@ static_resources:
               - endpoint:
                   address:
                     socket_address: { address: demo-resource-api, port_value: 8090 }
-admin:
-  access_log_path: /tmp/admin_access.log
-  address:
-    socket_address: { address: 0.0.0.0, port_value: 9901 }
+overload_manager:
+  resource_monitors:
+    - name: envoy.resource_monitors.global_downstream_max_connections
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.resource_monitors.downstream_connections.v3.DownstreamConnectionsConfig
+        max_active_downstream_connections: 1000

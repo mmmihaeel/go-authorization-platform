@@ -62,6 +62,37 @@ func TestWorkerPublishesBatchConcurrently(t *testing.T) {
 	}
 }
 
+func TestWorkerBoundsPublishConcurrency(t *testing.T) {
+	repository := &memoryOutbox{
+		messages:  []OutboxMessage{{ID: "1"}, {ID: "2"}, {ID: "3"}, {ID: "4"}, {ID: "5"}},
+		published: map[string]bool{}, failed: map[string]bool{},
+	}
+	var mutex sync.Mutex
+	inFlight, maximum := 0, 0
+	worker, err := NewWorker(repository, publisherFunc(func(context.Context, OutboxMessage) error {
+		mutex.Lock()
+		inFlight++
+		if inFlight > maximum {
+			maximum = inFlight
+		}
+		mutex.Unlock()
+		time.Sleep(10 * time.Millisecond)
+		mutex.Lock()
+		inFlight--
+		mutex.Unlock()
+		return nil
+	}), WorkerConfig{Concurrency: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if maximum != 2 {
+		t.Fatalf("maximum concurrency=%d, want 2", maximum)
+	}
+}
+
 func TestWorkerMarksPublishFailureForRetry(t *testing.T) {
 	repository := &memoryOutbox{
 		messages:  []OutboxMessage{{ID: "1"}},

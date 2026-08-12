@@ -10,19 +10,9 @@ import (
 
 	"github.com/mmmihaeel/go-authorization-platform/internal/audit"
 	"github.com/mmmihaeel/go-authorization-platform/internal/broker"
+	"github.com/mmmihaeel/go-authorization-platform/internal/config"
+	"github.com/mmmihaeel/go-authorization-platform/internal/platform"
 )
-
-type demoOutbox struct{ emitted bool }
-
-func (d *demoOutbox) ClaimPending(_ context.Context, _ int) ([]audit.OutboxMessage, error) {
-	if d.emitted {
-		return nil, nil
-	}
-	d.emitted = true
-	return []audit.OutboxMessage{{ID: "demo-event", EventType: "authorization.decision.v1", RoutingKey: "authorization.decision", Payload: []byte(`{"demo":true}`), CreatedAt: time.Now().UTC()}}, nil
-}
-func (*demoOutbox) MarkPublished(context.Context, string) error                { return nil }
-func (*demoOutbox) MarkFailed(context.Context, string, error, time.Time) error { return nil }
 
 var version = "dev"
 var commit = "unknown"
@@ -32,14 +22,38 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// The default command demonstrates worker lifecycle and concurrency without
-	// infrastructure. Production wiring uses SQLRepository + RabbitMQPublisher.
-	worker, err := audit.NewWorker(&demoOutbox{}, broker.LogPublisher{Logger: logger}, audit.WorkerConfig{PollInterval: 2 * time.Second, Concurrency: 4})
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Error("load configuration", "error", err)
+		os.Exit(1)
+	}
+	db, err := platform.OpenPostgres(cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("connect audit database", "error", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+	repository, err := audit.NewSQLRepository(db)
+	if err != nil {
+		logger.Error("configure outbox repository", "error", err)
+		os.Exit(1)
+	}
+	publisher, err := broker.NewRabbitMQPublisher(cfg.RabbitMQURL, cfg.RabbitMQExchange)
+	if err != nil {
+		logger.Error("connect RabbitMQ publisher", "error", err)
+		os.Exit(1)
+	}
+	defer publisher.Close()
+
+	worker, err := audit.NewWorker(repository, publisher, audit.WorkerConfig{
+		PollInterval: time.Second, BatchSize: 50, Concurrency: 4,
+		OnError: func(err error) { logger.Error("dispatch outbox batch", "error", err) },
+	})
 	if err != nil {
 		logger.Error("create worker", "error", err)
 		os.Exit(1)
 	}
-	logger.Info("audit worker started", "mode", "demo", "version", version, "commit", commit)
+	logger.Info("audit outbox worker started", "version", version, "commit", commit)
 	if err := worker.Run(ctx); err != nil && err != context.Canceled {
 		logger.Error("worker stopped", "error", err)
 		os.Exit(1)

@@ -4,12 +4,13 @@ info:
   version: 0.1.0
   description: Stable decision contract over OpenFGA relationship checks and OPA contextual policy.
 servers:
-  - url: http://localhost:8080
+  - url: http://localhost:8085
 paths:
   /v1/decisions/check:
     post:
       operationId: checkAuthorization
       summary: Evaluate an authorization decision
+      security: [{ bearerAuth: [] }]
       requestBody:
         required: true
         content:
@@ -34,7 +35,7 @@ paths:
     get:
       operationId: readiness
       responses:
-        '200': { description: Process is ready in the current starter mode. }
+        '200': { description: Process and required persistence dependency are ready. }
   /metrics:
     get:
       operationId: metrics
@@ -44,6 +45,11 @@ paths:
           content:
             text/plain: { schema: { type: string } }
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
   schemas:
     Subject:
       type: object

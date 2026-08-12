@@ -9,7 +9,7 @@ The model represents a multi-tenant collaboration product:
 - `folder` and `document` form a resource hierarchy;
 - `user` and `service` are principals.
 
-This domain is large enough to demonstrate realistic authorization relationships while remaining easy to explain during a portfolio review.
+This domain is large enough to demonstrate realistic authorization relationships while remaining inspectable.
 
 ## Division of responsibility
 
@@ -49,7 +49,7 @@ Bob can view the document through team membership and parent-folder inheritance,
 ### Workload principal
 
 ```text
-service:reporting-bot viewer document:acme/roadmap
+service:service-account-reporting-service viewer document:acme/roadmap
 ```
 
 The service receives only the relation required for reporting. Identity/token delegation determines when the service is acting for itself versus on behalf of a user.
