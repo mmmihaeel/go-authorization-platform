@@ -1,0 +1,49 @@
+name: "Go Authorization Platform"
+model_file: "./model.fga"
+tuple_file: "./tuples.yaml"
+
+tests:
+  - name: "organization-admin-inherits-document-permissions"
+    description: "RBAC role at the tenant boundary grants document operations."
+    check:
+      - user: user:alice
+        object: document:acme/roadmap
+        assertions:
+          can_view: true
+          can_edit: true
+          can_delete: true
+
+  - name: "team-membership-and-folder-inheritance"
+    description: "ReBAC grants document visibility through team membership and the parent folder."
+    check:
+      - user: user:bob
+        object: document:acme/roadmap
+        assertions:
+          can_view: true
+          can_edit: false
+          can_delete: false
+      - user: user:dave
+        object: document:acme/roadmap
+        assertions:
+          can_view: true
+          can_edit: true
+          can_delete: false
+
+  - name: "service-principal-access"
+    description: "A delegated workload identity can receive a narrowly scoped relationship."
+    check:
+      - user: service:reporting-bot
+        object: document:acme/roadmap
+        assertions:
+          can_view: true
+          can_edit: false
+
+  - name: "tenant-boundary-isolation"
+    description: "No relationship path crosses from the acme tenant into globex."
+    check:
+      - user: user:bob
+        object: document:globex/plan
+        assertions:
+          can_view: false
+          can_edit: false
+          can_delete: false

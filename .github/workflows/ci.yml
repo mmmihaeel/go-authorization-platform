@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Resolve and verify modules
+        run: |
+          go mod download
+          go mod verify
+      - name: Format
+        run: test -z "$(gofmt -l $(find . -name '*.go' -not -path './vendor/*'))"
+      - name: Vet
+        run: go vet ./...
+      - name: Unit and integration tests
+        run: go test -coverprofile=coverage.out ./...
+      - name: Compile optional adapters
+        run: go test -tags 'oidc postgres rabbitmq otel' ./...
+      - name: Race tests
+        run: go test -race ./...
+      - name: Benchmark smoke
+        run: go test -run '^$' -bench BenchmarkDecisionService -benchtime=100x ./internal/authorization
+      - name: Build commands
+        run: make build
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: coverage.out
+
+  policies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test OPA policies
+        run: docker run --rm -v "$PWD/policies/opa:/policies:ro" openpolicyagent/opa:1.19.0-static test -v /policies
+      - name: Test OpenFGA model
+        run: docker run --rm -v "$PWD:/workspace:ro" openfga/cli:v0.7.20 model test --tests /workspace/policies/openfga/store.fga.yaml
+
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v4
+      - name: Lint and render Helm chart
+        run: |
+          helm lint deploy/helm/go-authorization-platform
+          helm template authz-platform deploy/helm/go-authorization-platform >/tmp/rendered.yaml
+      - name: Validate Compose configuration
+        run: docker compose --profile app --profile sidecar --profile infra --profile identity --profile observability config --quiet
+      - name: Build container images
+        run: |
+          docker build --build-arg TARGET=authz-api -t authz-api:test .
+          docker build --build-arg TARGET=admission-webhook -t admission-webhook:test .

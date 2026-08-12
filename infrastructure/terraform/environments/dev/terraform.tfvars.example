@@ -1,0 +1,3 @@
+image_tag        = "0.1.0"
+openfga_store_id = "01EXAMPLESTOREID"
+openfga_model_id = "01EXAMPLEMODELID"

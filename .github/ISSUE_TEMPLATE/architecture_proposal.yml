@@ -1,0 +1,21 @@
+name: Architecture proposal
+description: Propose a model, policy, protocol, or platform change.
+title: "rfc: "
+labels: [architecture]
+body:
+  - type: textarea
+    id: context
+    attributes: { label: Context and problem }
+    validations: { required: true }
+  - type: textarea
+    id: options
+    attributes: { label: Options and trade-offs }
+    validations: { required: true }
+  - type: textarea
+    id: failure
+    attributes: { label: Failure modes and rollback }
+    validations: { required: true }
+  - type: textarea
+    id: evidence
+    attributes: { label: Validation evidence required }
+    validations: { required: true }

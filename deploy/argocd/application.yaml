@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: go-authorization-platform
+  namespace: argocd
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/mmmihaeel/go-authorization-platform.git
+    targetRevision: main
+    path: deploy/helm/go-authorization-platform
+    helm:
+      releaseName: authz-platform
+      valueFiles: [values.yaml]
+      parameters:
+        - name: image.tag
+          value: "0.1.0"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: authz-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff: { duration: 5s, factor: 2, maxDuration: 3m }

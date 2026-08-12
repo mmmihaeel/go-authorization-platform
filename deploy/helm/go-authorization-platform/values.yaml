@@ -1,0 +1,76 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/mmmihaeel/go-authorization-platform
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: ""
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+config:
+  authorizationMode: remote
+  openfgaURL: http://openfga.authz-system.svc.cluster.local:8080
+  openfgaStoreID: ""
+  openfgaModelID: ""
+  opaURL: http://127.0.0.1:8181
+  opaDecisionPath: authz/decision
+  dependencyTimeout: 750ms
+  auditRequired: false
+  otlpEndpoint: otel-collector.observability.svc.cluster.local:4317
+
+secretEnv: []
+
+opaSidecar:
+  enabled: true
+  image: openpolicyagent/opa:1.19.0-static
+  resources:
+    requests: { cpu: 25m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+
+resources:
+  requests: { cpu: 100m, memory: 128Mi }
+  limits: { cpu: 500m, memory: 256Mi }
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile: { type: RuntimeDefault }
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: ["ALL"] }
+
+podAnnotations: {}
+podLabels: {}
+
+probes:
+  liveness: { path: /health/live, initialDelaySeconds: 5, periodSeconds: 10 }
+  readiness: { path: /health/ready, initialDelaySeconds: 3, periodSeconds: 5 }
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 70
+
+networkPolicy:
+  enabled: true
+
+serviceMonitor:
+  enabled: false
+  interval: 15s
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

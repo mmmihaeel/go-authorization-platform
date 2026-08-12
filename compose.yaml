@@ -1,0 +1,178 @@
+name: go-authorization-platform
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  networks: [authz]
+
+services:
+  postgres:
+    <<: *service-defaults
+    image: postgres:18.4-alpine
+    profiles: [infra]
+    environment:
+      POSTGRES_USER: authz
+      POSTGRES_PASSWORD: authz-local-only
+      POSTGRES_DB: authz
+    ports: ["5432:5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deploy/compose/postgres/00-create-openfga.sh:/docker-entrypoint-initdb.d/00-create-openfga.sh:ro
+      - ./migrations/000001_authorization_audit.up.sql:/docker-entrypoint-initdb.d/10-authorization-audit.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authz -d authz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  openfga-migrate:
+    image: openfga/openfga:v1.18.3
+    profiles: [infra]
+    restart: "no"
+    networks: [authz]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - migrate
+      - --datastore-engine=postgres
+      - --datastore-uri=postgres://authz:authz-local-only@postgres:5432/openfga?sslmode=disable
+
+  openfga:
+    <<: *service-defaults
+    image: openfga/openfga:v1.18.3
+    profiles: [infra]
+    depends_on:
+      openfga-migrate:
+        condition: service_completed_successfully
+    command:
+      - run
+      - --datastore-engine=postgres
+      - --datastore-uri=postgres://authz:authz-local-only@postgres:5432/openfga?sslmode=disable
+      - --playground-enabled=true
+      - --http-addr=0.0.0.0:8080
+      - --metrics-addr=0.0.0.0:2112
+    ports:
+      - "8081:8080"
+      - "3000:3000"
+      - "2112:2112"
+
+  opa:
+    <<: *service-defaults
+    image: openpolicyagent/opa:1.19.0-static
+    profiles: [infra]
+    command:
+      - run
+      - --server
+      - --addr=0.0.0.0:8181
+      - --set=decision_logs.console=true
+      - /policies
+    ports: ["8181:8181"]
+    volumes:
+      - ./policies/opa:/policies:ro
+    healthcheck:
+      test: ["CMD", "/opa", "eval", "1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    <<: *service-defaults
+    image: rabbitmq:4.3.4-management-alpine
+    profiles: [infra]
+    environment:
+      RABBITMQ_DEFAULT_USER: authz
+      RABBITMQ_DEFAULT_PASS: authz-local-only
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  keycloak:
+    <<: *service-defaults
+    image: quay.io/keycloak/keycloak:26.7.1
+    profiles: [identity]
+    command: ["start-dev", "--import-realm", "--health-enabled=true"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin-local-only
+    ports: ["8082:8080"]
+    volumes:
+      - ./demo/keycloak/realm-export.json:/opt/keycloak/data/import/authz-demo.json:ro
+
+  authz-api:
+    <<: *service-defaults
+    profiles: [app, sidecar]
+    build:
+      context: .
+      args:
+        TARGET: authz-api
+    environment:
+      HTTP_ADDRESS: :8080
+      AUTHZ_MODE: demo
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+    ports: ["8080:8080"]
+
+  demo-resource-api:
+    <<: *service-defaults
+    profiles: [app, sidecar]
+    build:
+      context: .
+      args:
+        TARGET: demo-resource-api
+    expose: ["8090"]
+
+  envoy:
+    <<: *service-defaults
+    image: envoyproxy/envoy:v1.39.0
+    profiles: [sidecar]
+    depends_on: [authz-api, demo-resource-api]
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    ports: ["10000:10000", "9901:9901"]
+    volumes:
+      - ./demo/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+
+  otel-collector:
+    <<: *service-defaults
+    image: otel/opentelemetry-collector-contrib:0.158.0
+    profiles: [observability]
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+
+  prometheus:
+    <<: *service-defaults
+    image: prom/prometheus:v3.13.2
+    profiles: [observability]
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d"]
+    volumes:
+      - ./observability/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts:/etc/prometheus/alerts:ro
+    ports: ["9090:9090"]
+
+  grafana:
+    <<: *service-defaults
+    image: grafana/grafana:13.1.3
+    profiles: [observability]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin-local-only
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3001:3000"]
+
+networks:
+  authz: {}
+
+volumes:
+  postgres-data: {}

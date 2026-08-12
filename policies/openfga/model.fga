@@ -1,0 +1,43 @@
+model
+  schema 1.1
+
+type user
+
+type service
+
+type organization
+  relations
+    define member: [user]
+    define admin: [user]
+    define auditor: [user]
+    define can_manage: admin
+    define can_view_audit: auditor or admin
+
+type team
+  relations
+    define organization: [organization]
+    define member: [user]
+    define manager: [user]
+    define can_view: member or manager
+    define can_manage: manager or admin from organization
+
+type folder
+  relations
+    define organization: [organization]
+    define owner: [user]
+    define editor: [user, service, team#member]
+    define viewer: [user, service, team#member]
+    define can_view: viewer or editor or owner or admin from organization
+    define can_edit: editor or owner or admin from organization
+    define can_delete: owner or admin from organization
+
+type document
+  relations
+    define organization: [organization]
+    define parent: [folder]
+    define owner: [user]
+    define editor: [user, service, team#member]
+    define viewer: [user, service, team#member]
+    define can_view: viewer or editor or owner or can_view from parent or admin from organization
+    define can_edit: editor or owner or can_edit from parent or admin from organization
+    define can_delete: owner or admin from organization

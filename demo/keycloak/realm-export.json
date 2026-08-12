@@ -1,0 +1,85 @@
+{
+  "realm": "authz-demo",
+  "enabled": true,
+  "displayName": "Go Authorization Platform Demo",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "clients": [
+    {
+      "clientId": "demo-cli",
+      "name": "Local demo CLI",
+      "publicClient": true,
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "redirectUris": ["http://localhost:*"],
+      "webOrigins": ["+"]
+    },
+    {
+      "clientId": "authz-api",
+      "name": "Authorization Decision API",
+      "bearerOnly": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false
+    },
+    {
+      "clientId": "reporting-service",
+      "name": "Delegated reporting workload",
+      "secret": "reporting-local-only",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false
+    }
+  ],
+  "roles": {
+    "realm": [
+      {"name": "tenant_admin"},
+      {"name": "tenant_auditor"},
+      {"name": "tenant_member"}
+    ]
+  },
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "alice@example.test",
+      "attributes": {"tenant_id": ["acme"]},
+      "credentials": [{"type": "password", "value": "alice-local-only", "temporary": false}],
+      "realmRoles": ["tenant_admin"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "bob@example.test",
+      "attributes": {"tenant_id": ["acme"]},
+      "credentials": [{"type": "password", "value": "bob-local-only", "temporary": false}],
+      "realmRoles": ["tenant_member"]
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "tenant-context",
+      "protocol": "openid-connect",
+      "attributes": {"include.in.token.scope": "true", "display.on.consent.screen": "false"},
+      "protocolMappers": [
+        {
+          "name": "tenant-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "tenant_id",
+            "claim.name": "tenant_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "multivalued": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "defaultDefaultClientScopes": ["profile", "email", "roles", "tenant-context", "web-origins", "acr", "basic"]
+}

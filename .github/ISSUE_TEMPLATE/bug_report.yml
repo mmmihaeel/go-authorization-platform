@@ -1,0 +1,24 @@
+name: Bug report
+description: Report incorrect authorization behavior or operational failure.
+title: "bug: "
+labels: [bug]
+body:
+  - type: textarea
+    id: observed
+    attributes: { label: Observed behavior }
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes: { label: Expected authorization behavior }
+    validations: { required: true }
+  - type: textarea
+    id: evidence
+    attributes: { label: Sanitized evidence, decision ID, and reproduction }
+    validations: { required: true }
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety
+      options:
+        - label: I removed tokens, secrets, personal data, and production identifiers.
+          required: true

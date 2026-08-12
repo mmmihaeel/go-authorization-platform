@@ -1,0 +1,81 @@
+static_resources:
+  listeners:
+    - name: public_listener
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 10000 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_http
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: demo_resource
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route: { cluster: demo_resource }
+                http_filters:
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      transport_api_version: V3
+                      failure_mode_allow: false
+                      status_on_error: { code: ServiceUnavailable }
+                      http_service:
+                        server_uri:
+                          uri: http://authz-api:8080
+                          cluster: authz_api
+                          timeout: 0.75s
+                        path_prefix: /v1/ext-authz
+                        authorization_request:
+                          allowed_headers:
+                            patterns:
+                              - { exact: x-subject-id }
+                              - { exact: x-subject-roles }
+                              - { exact: x-tenant-id }
+                              - { exact: x-resource-type }
+                              - { exact: x-resource-id }
+                              - { exact: x-resource-owner-id }
+                              - { exact: x-resource-classification }
+                              - { exact: x-action }
+                              - { exact: x-relation }
+                              - { exact: x-mfa }
+                              - { exact: x-device-trusted }
+                              - { exact: x-risk-score }
+                              - { exact: x-access-purpose }
+                              - { exact: x-request-id }
+                        authorization_response:
+                          allowed_upstream_headers:
+                            patterns:
+                              - { exact: x-authorization-decision-id }
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+    - name: authz_api
+      type: STRICT_DNS
+      connect_timeout: 0.5s
+      load_assignment:
+        cluster_name: authz_api
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: authz-api, port_value: 8080 }
+    - name: demo_resource
+      type: STRICT_DNS
+      connect_timeout: 0.5s
+      load_assignment:
+        cluster_name: demo_resource
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: demo-resource-api, port_value: 8090 }
+admin:
+  access_log_path: /tmp/admin_access.log
+  address:
+    socket_address: { address: 0.0.0.0, port_value: 9901 }

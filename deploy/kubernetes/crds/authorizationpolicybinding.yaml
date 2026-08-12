@@ -1,0 +1,83 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: authorizationpolicybindings.authz.platform.io
+spec:
+  group: authz.platform.io
+  scope: Namespaced
+  names:
+    plural: authorizationpolicybindings
+    singular: authorizationpolicybinding
+    kind: AuthorizationPolicyBinding
+    shortNames: [apb]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - { name: Policy, type: string, jsonPath: .spec.policyRef }
+        - { name: Mode, type: string, jsonPath: .spec.enforcement.mode }
+        - { name: Failure, type: string, jsonPath: .spec.enforcement.failureMode }
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [selector, policyRef, enforcement]
+              properties:
+                selector:
+                  x-kubernetes-map-type: atomic
+                  type: object
+                  properties:
+                    matchLabels:
+                      type: object
+                      additionalProperties: { type: string }
+                policyRef:
+                  type: string
+                  minLength: 1
+                openfga:
+                  type: object
+                  properties:
+                    storeRef: { type: string }
+                    modelRef: { type: string }
+                opa:
+                  type: object
+                  properties:
+                    package: { type: string, default: authz }
+                    decision: { type: string, default: decision }
+                enforcement:
+                  type: object
+                  required: [mode, failureMode]
+                  properties:
+                    mode:
+                      type: string
+                      enum: [sidecar, envoy]
+                    failureMode:
+                      type: string
+                      enum: [deny, allow-read-only]
+                      default: deny
+                    timeoutMillis:
+                      type: integer
+                      minimum: 50
+                      maximum: 5000
+                      default: 750
+            status:
+              type: object
+              properties:
+                observedGeneration: { type: integer, format: int64 }
+                conditions:
+                  type: array
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [type]
+                  items:
+                    type: object
+                    required: [type, status]
+                    properties:
+                      type: { type: string }
+                      status: { type: string, enum: ["True", "False", Unknown] }
+                      reason: { type: string }
+                      message: { type: string }
+                      lastTransitionTime: { type: string, format: date-time }
+      subresources:
+        status: {}

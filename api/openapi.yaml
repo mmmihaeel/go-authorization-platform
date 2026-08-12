@@ -1,0 +1,100 @@
+openapi: 3.1.0
+info:
+  title: Go Authorization Platform API
+  version: 0.1.0
+  description: Stable decision contract over OpenFGA relationship checks and OPA contextual policy.
+servers:
+  - url: http://localhost:8080
+paths:
+  /v1/decisions/check:
+    post:
+      operationId: checkAuthorization
+      summary: Evaluate an authorization decision
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CheckRequest' }
+      responses:
+        '200':
+          description: Decision evaluated; inspect `allowed`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Decision' }
+        '400':
+          description: Invalid decision input.
+        '503':
+          description: Required authorization dependency unavailable; decision is denied.
+  /health/live:
+    get:
+      operationId: liveness
+      responses:
+        '200': { description: Process is live. }
+  /health/ready:
+    get:
+      operationId: readiness
+      responses:
+        '200': { description: Process is ready in the current starter mode. }
+  /metrics:
+    get:
+      operationId: metrics
+      responses:
+        '200':
+          description: Prometheus text exposition.
+          content:
+            text/plain: { schema: { type: string } }
+components:
+  schemas:
+    Subject:
+      type: object
+      required: [id, tenant_id]
+      properties:
+        type: { type: string, default: user }
+        id: { type: string, minLength: 1 }
+        tenant_id: { type: string, minLength: 1 }
+        roles: { type: array, items: { type: string } }
+        claims: { type: object, additionalProperties: true }
+    Resource:
+      type: object
+      required: [type, id, tenant_id]
+      properties:
+        type: { type: string, minLength: 1 }
+        id: { type: string, minLength: 1 }
+        tenant_id: { type: string, minLength: 1 }
+        attributes: { type: object, additionalProperties: true }
+    RequestContext:
+      type: object
+      properties:
+        ip_address: { type: string }
+        device_trusted: { type: boolean, default: false }
+        mfa: { type: boolean, default: false }
+        risk_score: { type: integer, minimum: 0, maximum: 100 }
+        purpose: { type: string }
+        requested_at: { type: string, format: date-time }
+    CheckRequest:
+      type: object
+      required: [subject, resource, action, context]
+      additionalProperties: false
+      properties:
+        subject: { $ref: '#/components/schemas/Subject' }
+        resource: { $ref: '#/components/schemas/Resource' }
+        action: { type: string, minLength: 1, examples: [view] }
+        relation: { type: string, examples: [can_view] }
+        context: { $ref: '#/components/schemas/RequestContext' }
+        correlation_id: { type: string }
+    Decision:
+      type: object
+      required: [decision_id, allowed, reason_codes, evaluated_at, latency_ms, audit_recorded]
+      properties:
+        decision_id: { type: string }
+        correlation_id: { type: string }
+        allowed: { type: boolean }
+        reason_codes: { type: array, items: { type: string } }
+        evaluated_at: { type: string, format: date-time }
+        latency_ms:
+          type: object
+          properties:
+            openfga: { type: number }
+            opa: { type: number }
+            total: { type: number }
+        audit_recorded: { type: boolean }

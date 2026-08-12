@@ -1,0 +1,24 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: authorization-policy-enforcement
+webhooks:
+  - name: workloads.authz.platform.io
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 3
+    matchPolicy: Equivalent
+    clientConfig:
+      service:
+        namespace: authz-system
+        name: authorization-admission
+        path: /validate
+        port: 443
+      caBundle: REPLACE_WITH_BASE64_CA_BUNDLE
+    rules:
+      - apiGroups: ["", apps]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods, deployments, statefulsets, daemonsets]
+        scope: Namespaced

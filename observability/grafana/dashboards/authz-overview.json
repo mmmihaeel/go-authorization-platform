@@ -1,0 +1,36 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "type": "timeseries", "title": "Decision rate", "id": 1,
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "rate(authz_decisions_allowed_total[5m])", "legendFormat": "allowed"},
+        {"expr": "rate(authz_decisions_denied_total[5m])", "legendFormat": "denied"}
+      ]
+    },
+    {
+      "type": "stat", "title": "Evaluation errors / sec", "id": 2,
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum(rate(authz_decision_errors_total[5m]))"}]
+    },
+    {
+      "type": "stat", "title": "Authz API up", "id": 3,
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "min(up{job=\"authz-api\"})"}]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 41,
+  "tags": ["authorization", "openfga", "opa"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "title": "Authorization Platform Overview",
+  "uid": "authz-overview",
+  "version": 1
+}

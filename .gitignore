@@ -1,0 +1,14 @@
+/bin/
+/dist/
+.coverage/
+*.out
+.env
+.env.runtime
+*.tfstate
+*.tfstate.*
+.terraform/
+.terragrunt-cache/
+.local/
+.DS_Store
+.idea/
+.vscode/

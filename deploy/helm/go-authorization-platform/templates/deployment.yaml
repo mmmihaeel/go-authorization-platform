@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "authz.fullname" . }}
+  labels:
+    {{- include "authz.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      {{- include "authz.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "authz.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}{{ toYaml . | nindent 8 }}{{- end }}
+      annotations:
+        checksum/opa-policy: {{ .Files.Get "files/authz.rego" | sha256sum }}
+        {{- with .Values.podAnnotations }}{{ toYaml . | nindent 8 }}{{- end }}
+    spec:
+      serviceAccountName: {{ include "authz.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: authz-api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - { name: http, containerPort: 8080, protocol: TCP }
+          env:
+            - { name: HTTP_ADDRESS, value: ":8080" }
+            - { name: AUTHZ_MODE, value: {{ .Values.config.authorizationMode | quote }} }
+            - { name: OPENFGA_URL, value: {{ .Values.config.openfgaURL | quote }} }
+            - { name: OPENFGA_STORE_ID, value: {{ .Values.config.openfgaStoreID | quote }} }
+            - { name: OPENFGA_MODEL_ID, value: {{ .Values.config.openfgaModelID | quote }} }
+            - { name: OPA_URL, value: {{ .Values.config.opaURL | quote }} }
+            - { name: OPA_DECISION_PATH, value: {{ .Values.config.opaDecisionPath | quote }} }
+            - { name: AUTHZ_DEPENDENCY_TIMEOUT, value: {{ .Values.config.dependencyTimeout | quote }} }
+            - { name: AUTHZ_AUDIT_REQUIRED, value: {{ .Values.config.auditRequired | quote }} }
+            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ .Values.config.otlpEndpoint | quote }} }
+            {{- with .Values.secretEnv }}{{ toYaml . | nindent 12 }}{{- end }}
+          livenessProbe:
+            httpGet: { path: {{ .Values.probes.liveness.path }}, port: http }
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+          readinessProbe:
+            httpGet: { path: {{ .Values.probes.readiness.path }}, port: http }
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+        {{- if .Values.opaSidecar.enabled }}
+        - name: authorization-sidecar
+          image: {{ .Values.opaSidecar.image | quote }}
+          args: ["run", "--server", "--addr=127.0.0.1:8181", "/policies/authz.rego"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - { name: opa, containerPort: 8181, protocol: TCP }
+          resources:
+            {{- toYaml .Values.opaSidecar.resources | nindent 12 }}
+          volumeMounts:
+            - { name: opa-policy, mountPath: /policies, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+        {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.opaSidecar.enabled }}
+        - name: opa-policy
+          configMap:
+            name: {{ include "authz.fullname" . }}-opa
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}

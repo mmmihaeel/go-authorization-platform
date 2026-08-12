@@ -1,0 +1,24 @@
+groups:
+  - name: authorization-platform
+    rules:
+      - alert: AuthorizationServiceDown
+        expr: up{job="authz-api"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Authorization decision service is unavailable"
+          description: "Prometheus has failed to scrape authz-api for two minutes."
+      - alert: AuthorizationDependencyErrors
+        expr: rate(authz_decision_errors_total[5m]) > 0.01
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Authorization decisions are returning evaluation errors"
+          description: "Investigate OpenFGA, OPA, database, and network health before changing failure-mode behavior."
+      - alert: AuthorizationDenialSpike
+        expr: rate(authz_decisions_denied_total[5m]) > 5 * rate(authz_decisions_allowed_total[5m])
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Authorization denial rate increased sharply"
+          description: "Check recent policy/model changes and tenant-specific traffic before rollback."

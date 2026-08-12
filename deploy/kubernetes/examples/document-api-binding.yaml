@@ -1,0 +1,20 @@
+apiVersion: authz.platform.io/v1alpha1
+kind: AuthorizationPolicyBinding
+metadata:
+  name: document-api
+  namespace: demo
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: document-api
+  policyRef: document-access-v1
+  openfga:
+    storeRef: acme-documents
+    modelRef: v1
+  opa:
+    package: authz
+    decision: decision
+  enforcement:
+    mode: sidecar
+    failureMode: deny
+    timeoutMillis: 750

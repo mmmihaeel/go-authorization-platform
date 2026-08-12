@@ -1,0 +1,11 @@
+{{- if .Values.opaSidecar.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "authz.fullname" . }}-opa
+  labels:
+    {{- include "authz.labels" . | nindent 4 }}
+data:
+  authz.rego: |
+{{ .Files.Get "files/authz.rego" | default "package authz\ndefault allow := false" | indent 4 }}
+{{- end }}
